@@ -1,81 +1,78 @@
 /*
-  Copyright (C) 2010,2012,2013,2014,2015,2016 The ESPResSo project
-  Copyright (C) 2002,2003,2004,2005,2006,2007,2008,2009,2010
-    Max-Planck-Institute for Polymer Research, Theory Group
-
-  This file is part of ESPResSo.
-
-  ESPResSo is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
-
-  ESPResSo is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-/** \file polymer.cpp
-    This file contains everything needed to create a start-up configuration
-    of (partially charged) polymer chains with counterions and salt molecules,
-    assigning velocities to the particles and crosslinking the polymers if
-   necessary.
-
-    The corresponding header file is polymer.hpp.
-*/
+ * Copyright (C) 2010-2019 The ESPResSo project
+ * Copyright (C) 2002,2003,2004,2005,2006,2007,2008,2009,2010
+ *   Max-Planck-Institute for Polymer Research, Theory Group
+ *
+ * This file is part of ESPResSo.
+ *
+ * ESPResSo is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ESPResSo is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+/** \file
+ *  This file contains everything needed to create a start-up configuration
+ *  of (partially charged) polymer chains with counterions and salt molecules,
+ *  assigning velocities to the particles and cross-linking the polymers if
+ *  necessary.
+ *
+ *  The corresponding header file is polymer.hpp.
+ */
 
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 
+#include "PartCfg.hpp"
+#include "bonded_interactions/bonded_interaction_data.hpp"
 #include "communication.hpp"
 #include "constraints.hpp"
 #include "constraints/ShapeBasedConstraint.hpp"
-#include "debug.hpp"
 #include "global.hpp"
-#include "grid.hpp"
 #include "integrate.hpp"
-#include "interaction_data.hpp"
-#include "PartCfg.hpp"
 #include "polymer.hpp"
 #include "random.hpp"
-#include "utils.hpp"
 
-/*************************************************************
- * Functions                                                 *
- * ---------                                                 *
- *************************************************************/
+#include <utils/Vector.hpp>
+#include <utils/constants.hpp>
+#include <utils/math/sqr.hpp>
+#include <utils/math/vec_rotate.hpp>
 
-int mindist3(PartCfg & partCfg, int part_id, double r_catch, int *ids) {
-  int caught = 0;
-
-  auto const r_catch2 = r_catch * r_catch;
-  auto const &part = partCfg[part_id];
-
-  for (auto const &p : partCfg) {
-    if (p != part) {
-      if (get_mi_vector(part.r.p, p.r.p).norm2() < r_catch2)
-        ids[caught++] = p.p.identity;
-    }
-  }
-
-  return caught;
+Utils::Vector3d random_position(std::function<double()> const &generate_rn) {
+  Utils::Vector3d v;
+  for (int i = 0; i < 3; ++i)
+    v[i] = box_geo.length()[i] * generate_rn();
+  return v;
 }
 
-double mindist4(PartCfg & partCfg, double pos[3]) {
-  if (partCfg.size() == 0) {
-    return std::min(std::min(box_l[0], box_l[1]), box_l[2]);
+Utils::Vector3d random_unit_vector(std::function<double()> const &generate_rn) {
+  Utils::Vector3d v;
+  double const phi = acos(1. - 2. * generate_rn());
+  double const theta = 2. * Utils::pi() * generate_rn();
+  v[0] = sin(phi) * cos(theta);
+  v[1] = sin(phi) * sin(theta);
+  v[2] = cos(phi);
+  v /= v.norm();
+  return v;
+}
+
+double mindist(PartCfg &partCfg, Utils::Vector3d const &pos) {
+  if (partCfg.empty()) {
+    return std::min(std::min(box_geo.length()[0], box_geo.length()[1]),
+                    box_geo.length()[2]);
   }
 
   auto const mindist = std::accumulate(
       partCfg.begin(), partCfg.end(), std::numeric_limits<double>::infinity(),
       [&pos](double mindist, Particle const &p) {
-        return std::min(mindist, get_mi_vector(pos, p.r.p).norm2());
+        return std::min(mindist, get_mi_vector(pos, p.r.p, box_geo).norm2());
       });
 
   if (mindist < std::numeric_limits<double>::infinity())
@@ -83,1056 +80,146 @@ double mindist4(PartCfg & partCfg, double pos[3]) {
   return -1.0;
 }
 
-double buf_mindist4(double pos[3], int n_add, double *add) {
-  double mindist = 30000.0, dx, dy, dz;
-  int i;
+bool is_valid_position(
+    Utils::Vector3d const *pos,
+    std::vector<std::vector<Utils::Vector3d>> const *positions,
+    PartCfg &partCfg, double const min_distance,
+    int const respect_constraints) {
+  Utils::Vector3d const folded_pos = folded_position(*pos, box_geo);
+  // check if constraint is violated
+  if (respect_constraints) {
+    for (auto &c : Constraints::constraints) {
+      auto cs =
+          std::dynamic_pointer_cast<const Constraints::ShapeBasedConstraint>(c);
+      if (cs) {
+        double d;
+        Utils::Vector3d v;
 
-  if (n_add == 0)
-    return (std::min(std::min(box_l[0], box_l[1]), box_l[2]));
-  for (i = 0; i < n_add; i++) {
-    dx = pos[0] - add[3 * i + 0];
-    dx -= dround(dx / box_l[0]) * box_l[0];
-    dy = pos[1] - add[3 * i + 1];
-    dy -= dround(dy / box_l[1]) * box_l[1];
-    dz = pos[2] - add[3 * i + 2];
-    dz -= dround(dz / box_l[2]) * box_l[2];
-    mindist = std::min(mindist, SQR(dx) + SQR(dy) + SQR(dz));
-  }
-  if (mindist < 30000.0)
-    return (sqrt(mindist));
-  return (-1.0);
-}
+        cs->calc_dist(folded_pos, d, v);
 
-int collision(PartCfg & partCfg, double pos[3], double shield, int n_add, double *add) {
-  if (mindist4(partCfg, pos) > shield && buf_mindist4(pos, n_add, add) > shield)
-    return (0);
-  return (1);
-}
-
-#ifdef CONSTRAINTS
-
-int constraint_collision(double *p1, double *p2) {
-  Particle part1, part2;
-  double d1, d2, v[3];
-  double folded_pos1[3];
-  double folded_pos2[3];
-  int img[3];
-
-  memmove(folded_pos1, p1, 3 * sizeof(double));
-  fold_position(folded_pos1, img);
-
-  memmove(folded_pos2, p2, 3 * sizeof(double));
-  fold_position(folded_pos2, img);
-
-  for (auto &c : Constraints::constraints) {
-    auto cs =
-        std::dynamic_pointer_cast<const Constraints::ShapeBasedConstraint>(c);
-    if (cs) {
-      cs->calc_dist(folded_pos1, &d1, v);
-      cs->calc_dist(folded_pos2, &d2, v);
-
-      if (d1 * d2 < 0.0)
-        return 1;
-    }
-  }
-  return 0;
-}
-
-#endif
-
-int polymerC(PartCfg & partCfg, int N_P, int MPC, double bond_length, int part_id, double *posed,
-             int mode, double shield, int max_try, double val_cM, int cM_dist,
-             int type_nM, int type_cM, int type_bond, double angle,
-             double angle2, double *posed2, int constr) {
-  int p, n, cnt1, cnt2, max_cnt, bond_size, i;
-  double phi, zz, rr;
-  double pos[3];
-  double poz[3];
-  double poy[3] = {0, 0, 0};
-  double pox[3] = {0, 0, 0};
-  double a[3] = {0, 0, 0};
-  double b[3], c[3] = {0., 0., 0.}, d[3];
-  double absc;
-
-  std::vector<double> poly(3 * MPC);
-
-  bond_size = bonded_ia_params[type_bond].num;
-  std::vector<int> bond(bond_size + 1);
-  bond[0] = type_bond;
-
-  cnt1 = cnt2 = max_cnt = 0;
-  for (p = 0; p < N_P; p++) {
-    if (p > 0) posed = nullptr;
-
-    for (cnt2 = 0; cnt2 < max_try; cnt2++) {
-      /* place start monomer */
-      if (posed != nullptr) {
-        /* if position of 1st monomer is given */
-        pos[0] = posed[0];
-        pos[1] = posed[1];
-        pos[2] = posed[2];
-      } else {
-        /* randomly set position */
-        for (cnt1 = 0; cnt1 < max_try; cnt1++) {
-          pos[0] = box_l[0] * d_random();
-          pos[1] = box_l[1] * d_random();
-          pos[2] = box_l[2] * d_random();
-          if ((mode == 1) || (collision(partCfg, pos, shield, 0, nullptr) == 0))
-            break;
-          POLY_TRACE(printf("s"); fflush(nullptr));
-        }
-        if (cnt1 >= max_try) {
-          return (-1);
+        if (d <= 0) {
+          return false;
         }
       }
-      poly[0] = pos[0];
-      poly[1] = pos[1];
-      poly[2] = pos[2];
-
-      max_cnt = std::max(cnt1, max_cnt);
-      POLY_TRACE(printf("S"); fflush(nullptr));
-
-      poz[0] = pos[0];
-      poz[1] = pos[1];
-      poz[2] = pos[2];
-
-      /* place 2nd monomer */
-      n = 1;
-      if (posed2 != nullptr && posed != nullptr && angle2 > -1.0) {
-        /* if position of 2nd monomer is given */
-        pos[0] = posed2[0];
-        pos[1] = posed2[1];
-        pos[2] = posed2[2];
-        /* calculate preceding monomer so that bond_length is correct */
-        absc = sqrt(SQR(pos[0] - poz[0]) + SQR(pos[1] - poz[1]) +
-                    SQR(pos[2] - poz[2]));
-        poz[0] = pos[0] + (poz[0] - pos[0]) * bond_length / absc;
-        poz[1] = pos[1] + (poz[1] - pos[1]) * bond_length / absc;
-        poz[2] = pos[2] + (poz[2] - pos[2]) * bond_length / absc;
-        // POLY_TRACE(/* printf("virtually shifted position of first monomer to
-        // (%f,%f,%f)\n",poz[0],poz[1],poz[2]) */);
-      } else {
-        /* randomly place 2nd monomer */
-        for (cnt1 = 0; cnt1 < max_try; cnt1++) {
-          zz = (2.0 * d_random() - 1.0) * bond_length;
-          rr = sqrt(SQR(bond_length) - SQR(zz));
-          phi = 2.0 * PI * d_random();
-          pos[0] = poz[0] + rr * cos(phi);
-          pos[1] = poz[1] + rr * sin(phi);
-          pos[2] = poz[2] + zz;
-#ifdef CONSTRAINTS
-          if (constr == 0 ||
-              constraint_collision(pos, poly.data() + 3 * (n - 1)) == 0) {
-#endif
-
-            if (mode == 1 || collision(partCfg, pos, shield, n, poly.data()) == 0)
-              break;
-            if (mode == 0) {
-              cnt1 = -1;
-              break;
-            }
-#ifdef CONSTRAINTS
-          }
-#endif
-          POLY_TRACE(printf("m"); fflush(nullptr));
-        }
-        if (cnt1 >= max_try) {
-          fprintf(stderr, "\nWarning! Attempt #%d to build polymer %d failed "
-                          "while placing monomer 2!\n",
-                  cnt2 + 1, p);
-          fprintf(stderr, "         Retrying by re-setting the start-monomer "
-                          "of current chain...\n");
-        }
-        if (cnt1 == -1 || cnt1 >= max_try) {
-          continue; /* continue the main loop */
-        }
-      }
-      if (posed2 != nullptr && p > 0) {
-        posed2 = nullptr;
-      }
-      poly[3 * n] = pos[0];
-      poly[3 * n + 1] = pos[1];
-      poly[3 * n + 2] = pos[2];
-
-      max_cnt = std::max(cnt1, max_cnt);
-      POLY_TRACE(printf("M"); fflush(nullptr));
-
-      /* place remaining monomers */
-      for (n = 2; n < MPC; n++) {
-        if (angle2 > -1.0) {
-          if (n == 2) { /* if the 2nd angle is set, construct preceding monomer
-                          with resulting plane perpendicular on the xy-plane */
-            poy[0] = 2 * poz[0] - pos[0];
-            poy[1] = 2 * poz[1] - pos[1];
-            if (pos[2] == poz[2])
-              poy[2] = poz[2] + 1;
-            else
-              poy[2] = poz[2];
-          } else {
-            /* save 3rd last monomer */
-            pox[0] = poy[0];
-            pox[1] = poy[1];
-            pox[2] = poy[2];
-          }
-        }
-        if (angle > -1.0) {
-          /* save one but last monomer */
-          poy[0] = poz[0];
-          poy[1] = poz[1];
-          poy[2] = poz[2];
-        }
-        /* save last monomer */
-        poz[0] = pos[0];
-        poz[1] = pos[1];
-        poz[2] = pos[2];
-
-        if (angle > -1.0) {
-          a[0] = poy[0] - poz[0];
-          a[1] = poy[1] - poz[1];
-          a[2] = poy[2] - poz[2];
-
-          b[0] = pox[0] - poy[0];
-          b[1] = pox[1] - poy[1];
-          b[2] = pox[2] - poy[2];
-
-          vector_product(a, b, c);
-        }
-
-        for (cnt1 = 0; cnt1 < max_try; cnt1++) {
-          if (angle > -1.0) {
-            if (sqrlen(c) < ROUND_ERROR_PREC) {
-              fprintf(stderr, "WARNING: rotation axis is 0,0,0, check the "
-                              "angles given to the polymer command\n");
-              c[0] = 1;
-              c[1] = 0;
-              c[2] = 0;
-            }
-            if (angle2 > -1.0 && n > 2) {
-              vec_rotate(a, angle2, c, d);
-            } else {
-              phi = 2.0 * PI * d_random();
-              vec_rotate(a, phi, c, d);
-            }
-
-            vec_rotate(d, angle, a, b);
-
-            pos[0] = poz[0] + b[0];
-            pos[1] = poz[1] + b[1];
-            pos[2] = poz[2] + b[2];
-
-          } else {
-            zz = (2.0 * d_random() - 1.0) * bond_length;
-            rr = sqrt(SQR(bond_length) - SQR(zz));
-            phi = 2.0 * PI * d_random();
-            pos[0] = poz[0] + rr * cos(phi);
-            pos[1] = poz[1] + rr * sin(phi);
-            pos[2] = poz[2] + zz;
-          }
-
-// POLY_TRACE(/* printf("a=(%f,%f,%f) absa=%f M=(%f,%f,%f) c=(%f,%f,%f) absMc=%f
-// a*c=%f)\n",a[0],a[1],a[2],sqrt(SQR(a[0])+SQR(a[1])+SQR(a[2])),M[0],M[1],M[2],c[0],c[1],c[2],sqrt(SQR(M[0]+c[0])+SQR(M[1]+c[1])+SQR(M[2]+c[2])),a[0]*c[0]+a[1]*c[1]+a[2]*c[2])
-// */);
-// POLY_TRACE(/* printf("placed Monomer %d at
-// (%f,%f,%f)\n",n,pos[0],pos[1],pos[2]) */);
-
-#ifdef CONSTRAINTS
-          if (constr == 0 ||
-              constraint_collision(pos, poly.data() + 3 * (n - 1)) == 0) {
-#endif
-            if (mode == 1 || collision(partCfg, pos, shield, n, poly.data()) == 0)
-              break;
-            if (mode == 0) {
-              cnt1 = -2;
-              break;
-            }
-#ifdef CONSTRAINTS
-          }
-#endif
-          POLY_TRACE(printf("m"); fflush(nullptr));
-        }
-        if (cnt1 >= max_try) {
-          fprintf(stderr, "\nWarning! Attempt #%d to build polymer %d failed "
-                          "after %d unsuccessful trials to place monomer %d!\n",
-                  cnt2 + 1, p, cnt1, n);
-          fprintf(stderr, "         Retrying by re-setting the start-monomer "
-                          "of current chain...\n");
-        }
-        if (cnt1 == -2 || cnt1 >= max_try) {
-          n = 0;
-          break;
-        }
-        poly[3 * n] = pos[0];
-        poly[3 * n + 1] = pos[1];
-        poly[3 * n + 2] = pos[2];
-
-        max_cnt = std::max(cnt1, max_cnt);
-
-        POLY_TRACE(printf("M"); fflush(nullptr));
-      }
-      if (n > 0)
-        break;
-    } /* cnt2 */
-    POLY_TRACE(printf(" %d/%d->%d \n", cnt1, cnt2, max_cnt));
-    if (cnt2 >= max_try) {
-      return (-2);
-    } else
-
-      max_cnt = std::max(max_cnt, std::max(cnt1, cnt2));
-
-    /* actually creating current polymer in ESPResSo */
-    for (n = 0; n < MPC; n++) {
-
-      pos[0] = poly[3 * n];
-      pos[1] = poly[3 * n + 1];
-      pos[2] = poly[3 * n + 2];
-      if (place_particle(part_id, pos) == ES_PART_ERROR ||
-          (set_particle_q(part_id, ((n % cM_dist == 0) ? val_cM : 0.0)) ==
-           ES_ERROR) ||
-          (set_particle_type(part_id,
-                             ((n % cM_dist == 0) ? type_cM : type_nM)) ==
-           ES_ERROR)) {
-        return (-3);
-      }
-
-      if (n >= bond_size) {
-        bond[1] = part_id - bond_size;
-        for (i = 2; i <= bond_size; i++) {
-          bond[i] = part_id - bond_size + i;
-        }
-        if (change_particle_bond(part_id - bond_size + 1, bond.data(), 0) ==
-            ES_ERROR) {
-          return (-3);
-        }
-      }
-      part_id++;
-      // POLY_TRACE(/* printf("placed Monomer %d at
-      // (%f,%f,%f)\n",n,pos[0],pos[1],pos[2]) */);
     }
   }
 
-  return (std::max(max_cnt, cnt2));
-}
-
-int counterionsC(PartCfg & partCfg, int N_CI, int part_id, int mode, double shield, int max_try,
-                 double val_CI, int type_CI) {
-  int n, cnt1, max_cnt;
-  double pos[3];
-
-  cnt1 = max_cnt = 0;
-  for (n = 0; n < N_CI; n++) {
-    for (cnt1 = 0; cnt1 < max_try; cnt1++) {
-      pos[0] = box_l[0] * d_random();
-      pos[1] = box_l[1] * d_random();
-      pos[2] = box_l[2] * d_random();
-      if ((mode != 0) || (collision(partCfg, pos, shield, 0, nullptr) == 0))
-        break;
-      POLY_TRACE(printf("c"); fflush(nullptr));
+  if (min_distance > 0) {
+    // check for collision with existing particles
+    if (mindist(partCfg, *pos) < min_distance) {
+      return false;
     }
-    if (cnt1 >= max_try)
-      return (-1);
-    if (place_particle(part_id, pos) == ES_PART_ERROR)
-      return (-3);
-    if (set_particle_q(part_id, val_CI) == ES_ERROR)
-      return (-3);
-    if (set_particle_type(part_id, type_CI) == ES_ERROR)
-      return (-3);
-    part_id++;
-    max_cnt = std::max(cnt1, max_cnt);
-
-    POLY_TRACE(printf("C"); fflush(nullptr));
-  }
-  POLY_TRACE(printf(" %d->%d \n", cnt1, max_cnt));
-  if (cnt1 >= max_try)
-    return (-1);
-
-  return (std::max(max_cnt, cnt1));
-}
-
-int saltC(PartCfg & partCfg, int N_pS, int N_nS, int part_id, int mode, double shield, int max_try,
-          double val_pS, double val_nS, int type_pS, int type_nS, double rad) {
-  int n, cnt1, max_cnt;
-  double pos[3], dis2;
-
-  cnt1 = max_cnt = 0;
-
-  /* Place positive salt ions */
-  for (n = 0; n < N_pS; n++) {
-    for (cnt1 = 0; cnt1 < max_try; cnt1++) {
-      if (rad > 0.) {
-        pos[0] = rad * (2. * d_random() - 1.);
-        pos[1] = rad * (2. * d_random() - 1.);
-        pos[2] = rad * (2. * d_random() - 1.);
-        dis2 = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
-        pos[0] += box_l[0] * 0.5;
-        pos[1] += box_l[1] * 0.5;
-        pos[2] += box_l[2] * 0.5;
-        if (((mode != 0) || (collision(partCfg, pos, shield, 0, nullptr) == 0)) &&
-            (dis2 < (rad * rad)))
-          break;
-      } else {
-        pos[0] = box_l[0] * d_random();
-        pos[1] = box_l[1] * d_random();
-        pos[2] = box_l[2] * d_random();
-        if ((mode != 0) || (collision(partCfg, pos, shield, 0, nullptr) == 0))
-          break;
+    // check for collision with buffered positions
+    double buff_mindist = std::numeric_limits<double>::infinity();
+    double h;
+    for (auto const p : *positions) {
+      for (auto m : p) {
+        h = (folded_position(*pos, box_geo) - folded_position(m, box_geo))
+                .norm2();
+        buff_mindist = std::min(h, buff_mindist);
       }
-      POLY_TRACE(printf("p"); fflush(nullptr));
     }
-    if (cnt1 >= max_try)
-      return (-1);
-    if (place_particle(part_id, pos) == ES_PART_ERROR)
-      return (-3);
-    if (set_particle_q(part_id, val_pS) == ES_ERROR)
-      return (-3);
-    if (set_particle_type(part_id, type_pS) == ES_ERROR)
-      return (-3);
-    part_id++;
-
-    max_cnt = std::max(cnt1, max_cnt);
-    POLY_TRACE(printf("P"); fflush(nullptr));
+    if (std::sqrt(buff_mindist) < min_distance) {
+      return false;
+    }
   }
-  POLY_TRACE(printf(" %d->%d \n", cnt1, max_cnt));
-  if (cnt1 >= max_try)
-    return (-1);
+  return true;
+}
 
-  /* Place negative salt ions */
-  for (n = 0; n < N_nS; n++) {
-    for (cnt1 = 0; cnt1 < max_try; cnt1++) {
-      if (rad > 0.) {
-        pos[0] = rad * (2. * d_random() - 1.);
-        pos[1] = rad * (2. * d_random() - 1.);
-        pos[2] = rad * (2. * d_random() - 1.);
-        dis2 = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
-        pos[0] += box_l[0] * 0.5;
-        pos[1] += box_l[1] * 0.5;
-        pos[2] += box_l[2] * 0.5;
-        if (((mode != 0) || (collision(partCfg, pos, shield, 0, nullptr) == 0)) &&
-            (dis2 < (rad * rad)))
-          break;
-      } else {
-        pos[0] = box_l[0] * d_random();
-        pos[1] = box_l[1] * d_random();
-        pos[2] = box_l[2] * d_random();
-        if ((mode != 0) || (collision(partCfg, pos, shield, 0, nullptr) == 0))
-          break;
+std::vector<std::vector<Utils::Vector3d>>
+draw_polymer_positions(PartCfg &partCfg, int const n_polymers,
+                       int const beads_per_chain, double const bond_length,
+                       std::vector<Utils::Vector3d> const &start_positions,
+                       double const min_distance, int const max_tries,
+                       int const use_bond_angle, double const bond_angle,
+                       int const respect_constraints, int const seed) {
+  std::vector<std::vector<Utils::Vector3d>> positions(
+      n_polymers, std::vector<Utils::Vector3d>(beads_per_chain));
+
+  std::mt19937 mt(seed);
+  std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+  Utils::Vector3d trial_pos;
+  int attempts_mono, attempts_poly;
+
+  // make sure that if given, all starting positions are valid
+  if ((not start_positions.empty()) and
+      std::any_of(start_positions.begin(), start_positions.end(),
+                  [&positions, &partCfg, min_distance,
+                   respect_constraints](Utils::Vector3d v) {
+                    return not is_valid_position(&v, &positions, partCfg,
+                                                 min_distance,
+                                                 respect_constraints);
+                  }))
+    throw std::runtime_error("Invalid start positions.");
+  // use (if none given, random) starting positions for every first monomer
+  for (int p = 0; p < n_polymers; ++p) {
+    attempts_mono = 0;
+    // first monomer for all polymers
+    if (start_positions.empty()) {
+      do {
+        trial_pos = random_position([&]() { return dist(mt); });
+        attempts_mono++;
+      } while ((not is_valid_position(&trial_pos, &positions, partCfg,
+                                      min_distance, respect_constraints)) and
+               (attempts_mono < max_tries));
+      if (attempts_mono == max_tries) {
+        throw std::runtime_error("Failed to create polymer start positions.");
       }
-      POLY_TRACE(printf("n"); fflush(nullptr));
-    }
-    if (cnt1 >= max_try)
-      return (-1);
-    if (place_particle(part_id, pos) == ES_PART_ERROR)
-      return (-3);
-    if (set_particle_q(part_id, val_nS) == ES_ERROR)
-      return (-3);
-    if (set_particle_type(part_id, type_nS) == ES_ERROR)
-      return (-3);
-    part_id++;
-
-    max_cnt = std::max(cnt1, max_cnt);
-
-    POLY_TRACE(printf("N"); fflush(nullptr));
-  }
-  POLY_TRACE(printf(" %d->%d \n", cnt1, max_cnt));
-  if (cnt1 >= max_try)
-    return (-2);
-
-  return (std::max(max_cnt, cnt1));
-}
-
-double velocitiesC(double v_max, int part_id, int N_T) {
-  double v[3], v_av[3];
-  int i;
-
-  v_av[0] = v_av[1] = v_av[2] = 0.0;
-  for (i = part_id; i < part_id + N_T; i++) {
-    do {
-      v[0] = v_max * 2. * (d_random() - .5) * time_step;
-      v[1] = v_max * 2. * (d_random() - .5) * time_step;
-      v[2] = v_max * 2. * (d_random() - .5) * time_step;
-      // note that time_step == -1, as long as it is not yet set
-    } while (sqrt(SQR(v[0]) + SQR(v[1]) + SQR(v[2])) > v_max * fabs(time_step));
-    v_av[0] += v[0];
-    v_av[1] += v[1];
-    v_av[2] += v[2];
-    if (set_particle_v(i, v) == ES_ERROR) {
-      fprintf(stderr, "INTERNAL ERROR: failed upon setting one of the "
-                      "velocities in Espresso (current average: %f)!\n",
-              sqrt(SQR(v_av[0]) + SQR(v_av[1]) + SQR(v_av[2])));
-      fprintf(stderr, "Aborting...\n");
-      errexit();
-    }
-  }
-  // note that time_step == -1, as long as it is not yet set
-  return (sqrt(SQR(v_av[0]) + SQR(v_av[1]) + SQR(v_av[2])) / fabs(time_step));
-}
-
-double maxwell_velocitiesC(int part_id, int N_T) {
-  double v[3], v_av[3], uniran[2];
-  int i;
-  int flag = 1;
-  uniran[0] = d_random();
-  uniran[1] = d_random();
-  v_av[0] = v_av[1] = v_av[2] = 0.0;
-  for (i = part_id; i < part_id + N_T; i++) {
-    if (flag == 1) {
-      v[0] = pow((-2. * log(uniran[0])), 0.5) * cos(2. * PI * uniran[1]) *
-             time_step;
-      v[1] = pow((-2. * log(uniran[1])), 0.5) * sin(2. * PI * uniran[0]) *
-             time_step;
-      uniran[0] = d_random();
-      uniran[1] = d_random();
-      v[2] = pow((-2. * log(uniran[0])), 0.5) * cos(2. * PI * uniran[1]) *
-             time_step;
-      flag = 0;
+      positions[p][0] = trial_pos;
     } else {
-      v[0] = pow((-2. * log(uniran[1])), 0.5) * sin(2. * PI * uniran[0]) *
-             time_step;
-      uniran[0] = d_random();
-      uniran[1] = d_random();
-      v[1] = pow((-2. * log(uniran[0])), 0.5) * cos(2. * PI * uniran[1]) *
-             time_step;
-      v[2] = pow((-2. * log(uniran[1])), 0.5) * sin(2. * PI * uniran[0]) *
-             time_step;
-      flag = 1;
-    }
-    // printf("%f \n %f \n %f \n",v[0],v[1],v[2]);
-    v_av[0] += v[0];
-    v_av[1] += v[1];
-    v_av[2] += v[2];
-    if (set_particle_v(i, v) == ES_ERROR) {
-      fprintf(stderr, "INTERNAL ERROR: failed upon setting one of the "
-                      "velocities in Espresso (current average: %f)!\n",
-              sqrt(SQR(v_av[0]) + SQR(v_av[1]) + SQR(v_av[2])));
-      fprintf(stderr, "Aborting...\n");
-      errexit();
-    }
-  }
-  // note that time_step == -1, as long as it is not yet set
-  return (sqrt(SQR(v_av[0]) + SQR(v_av[1]) + SQR(v_av[2])) / fabs(time_step));
-}
-
-int collectBonds(PartCfg & partCfg, int mode, int part_id, int N_P, int MPC, int type_bond,
-                 std::vector<int> bond, std::vector<std::vector<int>> bonds) {
-  int i, j, k, ii, size;
-
-  partCfg.update_bonds();
-
-  if (mode == 1) {
-    /* Find all the bonds leading to and from the ending monomers of the chains.
-     */
-    bond.resize(2 * N_P);
-    bonds.resize(2 * N_P);
-    for (i = 0; i < 2 * N_P; i++) {
-      bond[i] = 0;
-      bonds[i].resize(1);
-    }
-    for (k = part_id; k < N_P * MPC + part_id; k++) {
-      i = 0;
-      while (i < partCfg[k].bl.n) {
-        size = bonded_ia_params[partCfg[k].bl.e[i]].num;
-        if (partCfg[k].bl.e[i++] == type_bond) {
-          for (j = 0; j < size; j++) {
-            if ((partCfg[k].p.identity % MPC == 0) ||
-                ((partCfg[k].p.identity + 1) % MPC == 0)) {
-              ii = partCfg[k].p.identity % MPC
-                       ? 2 * (partCfg[k].p.identity + 1) / MPC - 1
-                       : 2 * partCfg[k].p.identity / MPC;
-              bonds[i].resize(bond[i] + 1) ;
-              bonds[ii][bond[ii]++] = partCfg[k].bl.e[i];
-            } else if ((partCfg[k].bl.e[i] % MPC == 0) ||
-                       ((partCfg[k].bl.e[i] + 1) % MPC == 0)) {
-              ii = partCfg[k].bl.e[i] % MPC ? 2 * (partCfg[k].bl.e[i] + 1) / MPC - 1
-                                        : 2 * partCfg[k].bl.e[i] / MPC;
-              bonds[i].resize(bond[i] + 1);
-              bonds[ii][bond[ii]++] = partCfg[k].p.identity;
-            }
-            i++;
-          }
-        } else
-          i += size;
-      }
-    }
-    POLY_TRACE(for (i = 0; i < 2 * N_P; i++) {
-      printf("(%d) %d:\t", i, i % 2 ? (i + 1) * MPC / 2 - 1 : i * MPC / 2);
-      if (bond[i] > 0)
-        for (j = 0; j < bond[i]; j++)
-          printf("%d ", bonds[i][j]);
-      printf("\t=%d\n", bond[i]);
-    });
-  } else if (mode == 2) {
-    /* Find all the bonds leading to and from each monomer. */
-    bond.resize(N_P * MPC);
-    bonds.resize(N_P * MPC);
-    for (i = 0; i < N_P * MPC + part_id; i++) {
-      bond[i] = 0;
-      bonds[i].resize(1);
-    }
-    for (k = part_id; k < N_P * MPC + part_id; k++) {
-      i = 0;
-      while (i < partCfg[k].bl.n) {
-        size = bonded_ia_params[partCfg[k].bl.e[i]].num;
-        if (partCfg[k].bl.e[i++] == type_bond) {
-          for (j = 0; j < size; j++) {
-            ii = partCfg[k].bl.e[i];
-            bonds[k].resize(bond[k] + 1);
-            bonds[k][bond[k]++] = ii;
-            bonds[ii].resize(bond[ii] + 1);
-            bonds[ii][bond[ii]++] = k;
-            i++;
-          }
-        } else
-          i += size;
-      }
-    }
-    POLY_TRACE(for (i = 0; i < N_P * MPC + part_id; i++) {
-      printf("%d:\t", i);
-      if (bond[i] > 0)
-        for (j = 0; j < bond[i]; j++)
-          printf("%d ", bonds[i][j]);
-      printf("\t=%d\n", bond[i]);
-    });
-  } else {
-    fprintf(stderr, "Unknown mode %d requested!\nAborting...\n", mode);
-    fflush(nullptr);
-    return (-2);
-  }
-
-  return (0);
-}
-
-int crosslinkC(PartCfg & partCfg, int N_P, int MPC, int part_id, double r_catch, int link_dist,
-               int chain_dist, int type_bond, int max_try) {
-  int i, j, k, ii, size, bondN[2], crossL;
-  std::vector<int> bond;
-  std::vector<std::vector<int>> bonds;
-
-  /* Find all the bonds leading to and from each monomer. */
-  if (collectBonds(partCfg, 2, part_id, N_P, MPC, type_bond, bond, bonds))
-    return (-2);
-  POLY_TRACE(for (i = 0; i < N_P * MPC + part_id; i++) {
-    printf("%d:\t", i);
-    if (bond[i] > 0)
-      for (j = 0; j < bond[i]; j++)
-        printf("%d ", bonds[i][j]);
-    printf("\t=%d\n", bond[i]);
-  });
-
-  /* Find all possible binding partners in the neighbourhood of the unconnected
-   * ending monomers. */
-  std::vector<int> link(2 * N_P);
-  std::vector<std::vector<int>> links(2 * N_P);
-  for (i = 0; i < N_P; i++) {
-    for (k = 0; k < 2; k++) {
-      if (bond[i * MPC + k * (MPC - 1)] == 1) {
-        links[2 * i + k].resize(n_part);
-        link[2 * i + k] = mindist3(partCfg,i * MPC + k * (MPC - 1) + part_id, r_catch,
-                                   links[2 * i + k].data());
-        links[2 * i + k].resize(link[2 * i + k]);
-      } else if (bond[i * MPC + k * (MPC - 1)] == 2)
-        link[2 * i + k] = -1; /* Note that links[2*i+k] will not be malloc()ed
-                                 now (taken care of at end)!!! */
-      else {
-        fprintf(
-            stderr,
-            "Runaway end-monomer %d detected (has %d bonds)!\nAborting...\n",
-            i * N_P + k * (MPC - 1) + part_id, bond[i * MPC + k * (MPC - 1)]);
-        fflush(nullptr);
-        return (-2);
-      }
-      POLY_TRACE(printf("%d: ", i * MPC + k * (MPC - 1) + part_id);
-                 for (j = 0; j < link[2 * i + k]; j++)
-                     printf("%d ", links[2 * i + k][j]);
-                 printf("\t=%d\n", link[2 * i + k]); fflush(nullptr));
+      positions[p][0] = start_positions[p];
     }
   }
 
-  /* Throw out all the monomers which are ends, which are too close to the
-   * ending monomers on the same chain, or which are no monomers at all. */
-  for (i = 0; i < N_P; i++) {
-    for (k = 0; k < 2; k++) {
-      size = 0;
-      ii = i * MPC + k * (MPC - 1) + part_id;
-      if (link[2 * i + k] >= 0) {
-        for (j = 0; j < link[2 * i + k]; j++) { /* only monomers && ((same
-                                                   chain, but sufficiently far
-                                                   away) || (different chain))
-                                                   */
-          if ((links[2 * i + k][j] < N_P * MPC + part_id) &&
-              (((abs(links[2 * i + k][j] - ii) > chain_dist) ||
-                (abs(links[2 * i + k][j] - i * MPC) > (1. * MPC)))))
-            if ((links[2 * i + k][j] % MPC != 0) &&
-                ((links[2 * i + k][j] + 1) % MPC != 0))
-              links[2 * i + k][size++] =
-                  links[2 * i + k][j]; /* no ends accepted */
+  // create remaining monomers' positions
+  for (int p = 0; p < n_polymers; ++p) {
+    attempts_poly = 0;
+    for (int m = 1; m < beads_per_chain; ++m) {
+      attempts_mono = 0;
+      do {
+        if (m == 0) {
+          // m == 0 is only true after a failed attempt to position a polymer
+          trial_pos = random_position([&]() { return dist(mt); });
+        } else if (not use_bond_angle or m < 2) {
+          // random step, also necessary if angle is set, placing the second
+          // bead
+          trial_pos =
+              positions[p][m - 1] +
+              bond_length * random_unit_vector([&]() { return dist(mt); });
+        } else {
+          // use prescribed angle
+          Utils::Vector3d last_vec = positions[p][m - 1] - positions[p][m - 2];
+          trial_pos = positions[p][m - 1] +
+                      Utils::vec_rotate(
+                          vector_product(last_vec, random_unit_vector([&]() {
+                                           return dist(mt);
+                                         })),
+                          bond_angle, -last_vec);
         }
-        link[2 * i + k] = size;
-        links[2 * i + k].resize(link[2 * i + k]);
-      }
-      POLY_TRACE(printf("%d: ", ii); for (j = 0; j < link[2 * i + k]; j++)
-                     printf("%d ", links[2 * i + k][j]);
-                 printf("\t=%d\n", link[2 * i + k]); fflush(nullptr));
-    }
-  }
+        attempts_mono++;
+      } while ((not is_valid_position(&trial_pos, &positions, partCfg,
+                                      min_distance, respect_constraints)) and
+               (attempts_mono < max_tries));
 
-  /* Randomly choose a partner (if not available -> '-1') for each polymer
-   * chain's end if it's not already been crosslinked (-> '-2'). */
-  std::vector<int> cross(2 * N_P);
-  crossL = 0;
-  for (i = 0; i < 2 * N_P; i++)
-    if (link[i] > 0) {
-      cross[i] = links[i][(int)dround(d_random() * (link[i] - 1))];
-      crossL++;
-    } else {
-      cross[i] = -1 + link[i];
-      crossL -= link[i];
-    }
-  POLY_TRACE(for (i = 0; i < 2 * N_P; i++)
-                 printf("%d -> %d \t",
-                        i % 2 ? (i + 1) * MPC / 2 - 1 : i * MPC / 2, cross[i]);
-             printf("=> %d\n", crossL); fflush(nullptr));
-
-  /* Remove partners (-> '-3') if they are less than link_dist apart and retry.
-   */
-  k = 0;
-  ii = 1;
-  while ((k < max_try) && (ii > 0)) {
-    POLY_TRACE(printf("Check #%d: ", k));
-    for (i = 0; i < 2 * N_P; i++) {
-      if (cross[i] >= 0) {
-        for (j = 0; j < 2 * N_P;
-             j++) { /* In the neighbourhood of each partner shall be no future
-                       crosslinks (preventing stiffness). */
-          if ((j != i) && (cross[j] >= 0) &&
-              (abs(cross[j] - cross[i]) < link_dist)) {
-            cross[i] = -3;
-            cross[j] = -3;
-            crossL -= 2;
-            POLY_TRACE(printf("%d->%d! ", i, j));
-            break;
+      if (attempts_mono == max_tries) {
+        if (attempts_poly < max_tries) {
+          // if start positions have to be respected: fail ...
+          if (start_positions.empty()) {
+            throw std::runtime_error("Failed to create polymer positions with "
+                                     "given start positions.");
           }
-        }
-        if (cross[i] == -3)
-          continue; /* Partners shall not be too close to the chain's ends
-                       (because these will be crosslinked at some point). */
-        if ((cross[i] % MPC < link_dist) ||
-            (cross[i] % MPC >= MPC - link_dist)) {
-          cross[i] = -3;
-          crossL--;
-          POLY_TRACE(printf("%d->end! ", i));
-        } else { /* In the neighbourhood of each partner there shall be no other
-                    crosslinks (preventing stiffness). */
-          for (j = cross[i] - link_dist + 1; j < cross[i] + link_dist - 1;
-               j++) {
-            if ((j % MPC == 0) || ((j + 1) % MPC == 0))
-              size = 1;
-            else
-              size = 2;
-            if ((bond[j] > size) && (j - floor(i / 2.) * MPC < MPC)) {
-              cross[i] = -3;
-              crossL--;
-              POLY_TRACE(printf("%d->link! ", i));
-              break;
-            }
-          }
-        }
-      }
-    }
-    POLY_TRACE(printf("complete => %d CL left; ", crossL));
-    if (k == max_try - 1)
-      break;
-    else
-      ii = 0; /* Get out if max_try is about to be reached, preventing dangling
-                 unchecked bond suggestions. */
-    if (crossL < 2 * N_P) {
-      for (i = 0; i < 2 * N_P;
-           i++) { /* If crosslinks violated the rules & had to be removed,
-                     create new ones now. */
-        if (cross[i] == -3) {
-          ii++;
-          if (link[i] > 0) {
-            cross[i] = links[i][(int)dround(d_random() * (link[i] - 1))];
-            crossL++;
-          } else {
-            return (-2);
-          }
-        }
-      }
-    }
-    POLY_TRACE(printf("+ %d new = %d CL.\n", ii, crossL));
-    if (ii > 0)
-      k++;
-  }
-  POLY_TRACE(for (i = 0; i < 2 * N_P; i++)
-                 printf("%d -> %d \t",
-                        i % 2 ? (i + 1) * MPC / 2 - 1 : i * MPC / 2, cross[i]);
-             printf("=> %d\n", crossL); fflush(nullptr));
-
-  /* Submit all lawful partners as new bonds to Espresso (observing that bonds
-   * are stored with the higher-ID particle only). */
-  if (k >= max_try)
-    return (-1);
-
-  {
-    size = 0;
-    for (i = 0; i < N_P; i++) {
-      if (cross[2 * i] >= 0) {
-        bondN[0] = type_bond;
-        bondN[1] = i * MPC + part_id;
-        size++;
-        if (change_particle_bond(cross[2 * i], bondN, 0) == ES_ERROR)
-          return (-3);
-      }
-      if (cross[2 * i + 1] >= 0) {
-        bondN[0] = type_bond;
-        bondN[1] = cross[2 * i + 1];
-        size++;
-        if (change_particle_bond(i * MPC + (MPC - 1) + part_id, bondN, 0) ==
-            ES_ERROR)
-          return (-3);
-      }
-    }
-    POLY_TRACE(printf("Created %d new bonds; now %d ends are crosslinked!\n",
-                      size, crossL));
-    return (crossL);
-  }
-}
-
-int diamondC(PartCfg & partCfg, double a, double bond_length, int MPC, int N_CI, double val_nodes,
-             double val_cM, double val_CI, int cM_dist, int nonet) {
-  int i, j, k, part_id, bond[2], type_bond = 0, type_node = 0, type_cM = 1,
-                                 type_nM = 1, type_CI = 2;
-  double pos[3], off = bond_length / sqrt(3);
-  double dnodes[8][3] = {{0, 0, 0}, {1, 1, 1}, {2, 2, 0}, {0, 2, 2},
-                         {2, 0, 2}, {3, 3, 1}, {1, 3, 3}, {3, 1, 3}};
-  int dchain[16][5] = {
-      {0, 1, +1, +1, +1}, {1, 2, +1, +1, -1}, {1, 3, -1, +1, +1},
-      {1, 4, +1, -1, +1}, {2, 5, +1, +1, +1}, {3, 6, +1, +1, +1},
-      {4, 7, +1, +1, +1}, {5, 0, +1, +1, -1}, {5, 3, +1, -1, +1},
-      {5, 4, -1, +1, +1}, {6, 0, -1, +1, +1}, {6, 2, +1, -1, +1},
-      {6, 4, +1, +1, -1}, {7, 0, +1, -1, +1}, {7, 2, -1, +1, +1},
-      {7, 3, +1, +1, -1}};
-
-  part_id = 0;
-  /* place 8 tetra-functional nodes */
-  for (i = 0; i < 8; i++) {
-    for (j = 0; j < 3; j++) {
-      dnodes[i][j] *= a / 4.;
-      pos[j] = dnodes[i][j];
-    }
-    if (place_particle(part_id, pos) == ES_PART_ERROR)
-      return (-3);
-    if (set_particle_q(part_id, val_nodes) == ES_ERROR)
-      return (-3);
-    if (set_particle_type(part_id, type_node) == ES_ERROR)
-      return (-3);
-    part_id++;
-  }
-
-  /* place intermediate monomers on chains connecting the nodes */
-  for (i = 0; i < 2 * 8; i++) {
-    for (k = 1; k <= MPC; k++) {
-      for (j = 0; j < 3; j++)
-        pos[j] = dnodes[dchain[i][0]][j] + k * dchain[i][2 + j] * off;
-      if (place_particle(part_id, pos) == ES_PART_ERROR)
-        return (-3);
-      if (set_particle_q(part_id, (k % cM_dist == 0) ? val_cM : 0.0) ==
-          ES_ERROR)
-        return (-3);
-      if (set_particle_type(part_id, (k % cM_dist == 0) ? type_cM : type_nM) ==
-          ES_ERROR)
-        return (-3);
-      bond[0] = type_bond;
-      if (k == 1) {
-        if (nonet != 1) {
-          bond[1] = dchain[i][0];
-          if (change_particle_bond(part_id, bond, 0) == ES_ERROR)
-            return (-3);
+          // ... otherwise retry to position the whole polymer
+          attempts_poly++;
+          m = -1;
+        } else {
+          // ... but only if max_tries has not been exceeded.
+          throw std::runtime_error("Failed to create polymer positions.");
         }
       } else {
-        bond[1] = part_id - 1;
-        if (change_particle_bond(part_id, bond, 0) == ES_ERROR)
-          return (-3);
-      }
-      if ((k == MPC) && (nonet != 1)) {
-        bond[1] = dchain[i][1];
-        if (change_particle_bond(part_id, bond, 0) == ES_ERROR)
-          return (-3);
-      }
-      part_id++;
-    }
-  }
-
-  /* place counterions (if any) */
-  if (N_CI > 0)
-    counterionsC(partCfg, N_CI, part_id, 1, 0.0, 30000, val_CI, type_CI);
-
-  return (0);
-}
-
-int icosaederC(PartCfg & partCfg, double ico_a, int MPC, int N_CI, double val_cM, double val_CI,
-               int cM_dist) {
-  int i, j, k, l, part_id, bond[2], type_bond = 0, type_cM = 0, type_nM = 1,
-                                    type_CI = 2;
-  double pos[3], pos_shift[3], vec[3], e_vec[3], vec_l,
-      bond_length = (2 * ico_a / 3.) / (1. * MPC);
-  double ico_g = ico_a * (1 + sqrt(5)) / 2.0, shift = 0.0;
-  double ico_coord[12][3] = {
-      {0, +ico_a, +ico_g}, {0, +ico_a, -ico_g}, {0, -ico_a, +ico_g},
-      {0, -ico_a, -ico_g}, {+ico_a, +ico_g, 0}, {+ico_a, -ico_g, 0},
-      {-ico_a, +ico_g, 0}, {-ico_a, -ico_g, 0}, {+ico_g, 0, +ico_a},
-      {-ico_g, 0, +ico_a}, {+ico_g, 0, -ico_a}, {-ico_g, 0, -ico_a}};
-  int ico_NN[12][5] = {{2, 8, 4, 6, 9},   {3, 10, 4, 6, 11}, {0, 8, 5, 7, 9},
-                       {1, 10, 5, 7, 11}, {0, 6, 1, 10, 8},  {2, 7, 3, 10, 8},
-                       {0, 4, 1, 11, 9},  {2, 5, 3, 11, 9},  {0, 2, 5, 10, 4},
-                       {0, 2, 7, 11, 6},  {1, 3, 5, 8, 4},   {1, 3, 7, 9, 6}};
-  int ico_ind[12][10];
-
-  /* make sure that the edges in ico_NN are sorted such that NearestNeighbours
-   * are next to each other */
-  /* int    ico_NN[12][5]    = {{2,4,6,8, 9}, {3,4,6,10,11}, {0,5,7,8, 9},
-  {1,5,7,10,11}, {0,1,6,8,10}, {2,3,7,8,10},
-                             {0,1,4,9,11}, {2,3,5, 9,11}, {0,2,4,5,10}, {0,2,6,
-  7,11}, {1,3,4,5, 8}, {1,3,6,7, 9}};
-  for(i=0; i<12; i++) {
-    printf("%d: { ",i);
-    for(j=0; j<5; j++) printf("%d ",ico_NN[i][j]);
-    printf("} -> ");
-    for(j=0; j<5; j++)
-      for(l=0; l<5; l++)
-        if(j!=l)
-          for(k=0; k<5; k++)
-            if(ico_NN[ico_NN[i][j]][k]==ico_NN[i][l]) printf("%d = %d (@%d)
-  ",ico_NN[i][j],ico_NN[i][l],k);
-    printf("\n");
-  } */
-
-  /* shift coordinates to not be centered around zero but rather be positive */
-  if (ico_a > ico_g)
-    shift = ico_a;
-  else
-    shift = ico_g;
-
-  /* create fulleren & soccer-ball */
-  part_id = 0;
-  for (i = 0; i < 12; i++) {
-    for (j = 0; j < 5; j++) {
-      /* place chains along the 5 edges around each of the 12 icosaeder's
-       * vertices */
-      if (j < 4)
-        for (l = 0; l < 3; l++)
-          vec[l] =
-              (ico_coord[ico_NN[i][j + 1]][l] - ico_coord[ico_NN[i][j]][l]) /
-              3.;
-      else
-        for (l = 0; l < 3; l++)
-          vec[l] =
-              (ico_coord[ico_NN[i][0]][l] - ico_coord[ico_NN[i][4]][l]) / 3.;
-      vec_l = sqrt(SQR(vec[0]) + SQR(vec[1]) + SQR(vec[2]));
-      for (l = 0; l < 3; l++)
-        e_vec[l] = vec[l] / vec_l;
-
-      ico_ind[i][j] = part_id;
-      bond_length = vec_l / (1. * MPC);
-      for (l = 0; l < 3; l++)
-        pos[l] = ico_coord[i][l] +
-                 (ico_coord[ico_NN[i][j]][l] - ico_coord[i][l]) / 3.;
-      for (k = 0; k < MPC; k++) {
-        for (l = 0; l < 3; l++)
-          pos_shift[l] = pos[l] + shift;
-        if (place_particle(part_id, pos_shift) == ES_PART_ERROR)
-          return (-3);
-        if (set_particle_q(part_id, val_cM) == ES_ERROR)
-          return (-3);
-        if (set_particle_type(part_id, type_cM) == ES_ERROR)
-          return (-3);
-        bond[0] = type_bond;
-        if (k > 0) {
-          bond[1] = part_id - 1;
-          if (change_particle_bond(part_id, bond, 0) == ES_ERROR)
-            return (-3);
-        }
-        part_id++;
-        for (l = 0; l < 3; l++)
-          pos[l] += bond_length * e_vec[l];
-      }
-
-      /* place chains along the 5 edges on the middle third of the connection
-       * between two NN vertices */
-      if (i < ico_NN[i][j]) {
-        for (l = 0; l < 3; l++)
-          vec[l] = (ico_coord[ico_NN[i][j]][l] - ico_coord[i][l]) / 3.;
-        vec_l = sqrt(SQR(vec[0]) + SQR(vec[1]) + SQR(vec[2]));
-        for (l = 0; l < 3; l++)
-          e_vec[l] = vec[l] / vec_l;
-
-        ico_ind[i][j + 5] = part_id;
-        bond_length = vec_l / (1. * MPC);
-        for (l = 0; l < 3; l++)
-          pos[l] = ico_coord[i][l] +
-                   (ico_coord[ico_NN[i][j]][l] - ico_coord[i][l]) / 3. +
-                   bond_length * e_vec[l];
-        for (k = 1; k < MPC; k++) {
-          for (l = 0; l < 3; l++)
-            pos_shift[l] = pos[l] + shift;
-          if (place_particle(part_id, pos_shift) == ES_ERROR)
-            return (-3);
-          if (set_particle_q(part_id, 0.0) == ES_ERROR)
-            return (-3);
-          if (set_particle_type(part_id, type_nM) == ES_ERROR)
-            return (-3);
-          bond[0] = type_bond;
-          if (k > 1) {
-            bond[1] = part_id - 1;
-            if (change_particle_bond(part_id, bond, 0) == ES_ERROR)
-              return (-3);
-          } else {
-            bond[1] = ico_ind[i][j];
-            if (change_particle_bond(part_id, bond, 0) == ES_ERROR)
-              return (-3);
-          }
-          part_id++;
-          for (l = 0; l < 3; l++)
-            pos[l] += bond_length * e_vec[l];
-        }
-      }
-    }
-
-    for (j = 0; j < 5; j++) {
-      /* add bonds between the edges around the vertices */
-      bond[0] = type_bond;
-      //      if(j>0) bond[1] = ico_ind[i][j-1] + (MPC-1); else bond[1] =
-      //      ico_ind[i][4] + (MPC-1);
-      if (j > 0)
-        bond[1] = ico_ind[i][j - 1] + (MPC - 1);
-      else if (MPC > 0)
-        bond[1] = ico_ind[i][4] + (MPC - 1);
-      else
-        bond[1] = ico_ind[i][4];
-      if (change_particle_bond(ico_ind[i][j], bond, 0) == ES_ERROR)
-        return (-2);
-
-      /* connect loose edges around vertices with chains along the middle third
-       * already created earlier */
-      if (i > ico_NN[i][j]) {
-        bond[0] = type_bond;
-        for (l = 0; l < 5; l++)
-          if (ico_NN[ico_NN[i][j]][l] == i)
-            break;
-        if (l == 5) {
-          fprintf(stderr, "INTERNAL ERROR: Couldn't find my neighbouring edge "
-                          "upon creating the icosaeder!\n");
-          errexit();
-        }
-        bond[1] = ico_ind[ico_NN[i][j]][l + 5] + (MPC - 2);
-        if (change_particle_bond(ico_ind[i][j], bond, 0) == ES_ERROR)
-          return (-1);
+        positions[p][m] = trial_pos;
       }
     }
   }
-
-  /* place counterions (if any) */
-  if (N_CI > 0)
-    counterionsC(partCfg, N_CI, part_id, 1, 0.0, 30000, val_CI, type_CI);
-
-  return (0);
+  return positions;
 }

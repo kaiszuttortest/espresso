@@ -1,28 +1,27 @@
 /*
-  Copyright (C) 2015,2016 The ESPResSo project
-
-  This file is part of ESPResSo.
-
-  ESPResSo is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
-
-  ESPResSo is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * Copyright (C) 2015-2019 The ESPResSo project
+ *
+ * This file is part of ESPResSo.
+ *
+ * ESPResSo is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ESPResSo is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include "initialize.hpp"
 #include "Cylinder.hpp"
+#include "Ellipsoid.hpp"
 #include "HollowCone.hpp"
-#include "Maze.hpp"
 #include "NoWhere.hpp"
-#include "Pore.hpp"
 #include "Rhomboid.hpp"
 #include "ScriptInterface.hpp"
 #include "SimplePore.hpp"
@@ -30,6 +29,7 @@
 #include "Sphere.hpp"
 #include "SpheroCylinder.hpp"
 #include "Stomatocyte.hpp"
+#include "Torus.hpp"
 #include "Wall.hpp"
 
 namespace ScriptInterface {
@@ -38,16 +38,16 @@ void initialize() {
   ScriptInterface::register_new<ScriptInterface::Shapes::NoWhere>(
       "Shapes::NoWhere");
   ScriptInterface::register_new<ScriptInterface::Shapes::Wall>("Shapes::Wall");
+  ScriptInterface::register_new<ScriptInterface::Shapes::Ellipsoid>(
+      "Shapes::Ellipsoid");
   ScriptInterface::register_new<ScriptInterface::Shapes::Sphere>(
       "Shapes::Sphere");
   ScriptInterface::register_new<ScriptInterface::Shapes::Cylinder>(
       "Shapes::Cylinder");
   ScriptInterface::register_new<ScriptInterface::Shapes::SpheroCylinder>(
       "Shapes::SpheroCylinder");
-  ScriptInterface::register_new<ScriptInterface::Shapes::Maze>("Shapes::Maze");
   ScriptInterface::register_new<ScriptInterface::Shapes::HollowCone>(
       "Shapes::HollowCone");
-  ScriptInterface::register_new<ScriptInterface::Shapes::Pore>("Shapes::Pore");
   ScriptInterface::register_new<ScriptInterface::Shapes::Rhomboid>(
       "Shapes::Rhomboid");
   ScriptInterface::register_new<ScriptInterface::Shapes::Slitpore>(
@@ -56,6 +56,8 @@ void initialize() {
       "Shapes::Stomatocyte");
   ScriptInterface::register_new<ScriptInterface::Shapes::SimplePore>(
       "Shapes::SimplePore");
+  ScriptInterface::register_new<ScriptInterface::Shapes::Torus>(
+      "Shapes::Torus");
 }
 } /* namespace Shapes */
 } /* namespace ScriptInterface */

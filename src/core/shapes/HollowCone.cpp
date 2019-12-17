@@ -1,41 +1,39 @@
 /*
-  Copyright (C) 2010,2011,2012,2013,2014 The ESPResSo project
-  Copyright (C) 2002,2003,2004,2005,2006,2007,2008,2009,2010
-  Max-Planck-Institute for Polymer Research, Theory Group
-
-  This file is part of ESPResSo.
-
-  ESPResSo is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
-
-  ESPResSo is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * Copyright (C) 2010-2019 The ESPResSo project
+ * Copyright (C) 2002,2003,2004,2005,2006,2007,2008,2009,2010
+ *   Max-Planck-Institute for Polymer Research, Theory Group
+ *
+ * This file is part of ESPResSo.
+ *
+ * ESPResSo is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ESPResSo is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include "HollowCone.hpp"
 
-#include <cmath>
 #include <cassert>
+#include <cmath>
 
 using namespace std;
 
 namespace Shapes {
-int HollowCone::calculate_dist(const double *ppos, double *dist, double *vec) const {
+void HollowCone::calculate_dist(const Utils::Vector3d &pos, double &dist,
+                                Utils::Vector3d &vec) const {
   int number = -1;
   double r0, r1, w, alpha, xd, yd, zd, mu, x_2D, y_2D, t0, t1, t2, time1, time2,
-      time3, time4, mdst0, mdst1, mdst2, mdst3, mindist, normalize, x, y, z,
-      distance, normal_x, normal_y, direction = 0.0, xp, yp, zp, xpp, ypp, sin_xy,
-      cos_xy, normal_x_3D, normal_y_3D, normal_z_3D, normal_3D_x, normal_3D_y,
-      normal_3D_z;
-
-  double closest_point_3D[3] = {-1.0, -1.0, -1.0};
+      time3, time4, mdst0, mdst1, mdst2, mdst3, mindist, normalize, x, y, z, xp,
+      yp, zp, xpp, ypp, sin_xy, cos_xy, normal_x_3D, normal_y_3D, normal_z_3D,
+      normal_3D_x, normal_3D_y, normal_3D_z;
 
   // Set the dimensions of the hollow cone
 
@@ -44,58 +42,26 @@ int HollowCone::calculate_dist(const double *ppos, double *dist, double *vec) co
   w = m_width;
   alpha = m_opening_angle;
 
-  // Set the position and orientation of the hollow cone
-
-  double hollow_cone_3D_position[3] = {m_position_x, m_position_y, m_position_z};
-
-  double hollow_cone_3D_orientation[3] = {m_orientation_x, m_orientation_y,
-                                          m_orientation_z};
-
   // Set the point for which we want to know the distance
 
-  double point_3D[3];
-
-  point_3D[0] = ppos[0];
-  point_3D[1] = ppos[1];
-  point_3D[2] = ppos[2];
+  Utils::Vector3d point_3D = pos;
 
   /***** Convert 3D coordinates to 2D planar coordinates *****/
 
   // Calculate the point on position + mu * orientation,
   // where the difference segment is orthogonal
 
-  mu = (hollow_cone_3D_orientation[0] * point_3D[0] +
-        hollow_cone_3D_orientation[1] * point_3D[1] +
-        hollow_cone_3D_orientation[2] * point_3D[2] -
-        hollow_cone_3D_position[0] * hollow_cone_3D_orientation[0] -
-        hollow_cone_3D_position[1] * hollow_cone_3D_orientation[1] -
-        hollow_cone_3D_position[2] * hollow_cone_3D_orientation[2]) /
-       (hollow_cone_3D_orientation[0] * hollow_cone_3D_orientation[0] +
-        hollow_cone_3D_orientation[1] * hollow_cone_3D_orientation[1] +
-        hollow_cone_3D_orientation[2] * hollow_cone_3D_orientation[2]);
+  mu = (m_orientation * point_3D - m_position * m_orientation) /
+       m_orientation.norm2();
 
   // Then the closest point to the line is
 
-  closest_point_3D[0] =
-      hollow_cone_3D_position[0] + mu * hollow_cone_3D_orientation[0];
-  closest_point_3D[1] =
-      hollow_cone_3D_position[1] + mu * hollow_cone_3D_orientation[1];
-  closest_point_3D[2] =
-      hollow_cone_3D_position[2] + mu * hollow_cone_3D_orientation[2];
+  Utils::Vector3d closest_point_3D = m_position + mu * m_orientation;
 
   // So the shortest distance to the line is
 
-  x_2D = sqrt((closest_point_3D[0] - point_3D[0]) *
-                  (closest_point_3D[0] - point_3D[0]) +
-              (closest_point_3D[1] - point_3D[1]) *
-                  (closest_point_3D[1] - point_3D[1]) +
-              (closest_point_3D[2] - point_3D[2]) *
-                  (closest_point_3D[2] - point_3D[2]));
-
-  y_2D =
-      mu * sqrt(hollow_cone_3D_orientation[0] * hollow_cone_3D_orientation[0] +
-                hollow_cone_3D_orientation[1] * hollow_cone_3D_orientation[1] +
-                hollow_cone_3D_orientation[2] * hollow_cone_3D_orientation[2]);
+  x_2D = (closest_point_3D - point_3D).norm();
+  y_2D = mu * m_orientation.norm();
 
   /***** Use the obtained planar coordinates in distance function *****/
 
@@ -186,9 +152,10 @@ int HollowCone::calculate_dist(const double *ppos, double *dist, double *vec) co
   // to which the point is closest, we know the distance,
   // but we still need the normal
 
-  distance = -1.0;
-  normal_x = -1.0;
-  normal_y = -1.0;
+  double distance = -1.0;
+  double normal_x = -1.0;
+  double normal_y = -1.0;
+  double direction = 0.0;
 
   if (number == 0) {
     normal_x = x_2D - r0 + 0.5 * w * cos(alpha) - r1 * time1 * sin(alpha);
@@ -302,15 +269,11 @@ int HollowCone::calculate_dist(const double *ppos, double *dist, double *vec) co
   // transformation to get it in 3D. The minimum distance stays
   // the same though. We first get the normalized direction vector.
 
-  x = hollow_cone_3D_orientation[0];
-  y = hollow_cone_3D_orientation[1];
-  z = hollow_cone_3D_orientation[2];
+  xd = m_orientation[0] / m_orientation.norm();
+  yd = m_orientation[1] / m_orientation.norm();
+  zd = m_orientation[2] / m_orientation.norm();
 
-  xd = x / sqrt(x * x + y * y + z * z);
-  yd = y / sqrt(x * x + y * y + z * z);
-  zd = z / sqrt(x * x + y * y + z * z);
-
-  // We now establish the rotion matrix required to go
+  // We now establish the rotation matrix required to go
   // form {0,0,1} to {xd,yd,zd}
 
   double matrix[9];
@@ -333,29 +296,19 @@ int HollowCone::calculate_dist(const double *ppos, double *dist, double *vec) co
     // The matrix is the identity matrix or reverses
     // or does a 180 degree rotation to take z -> -z
 
+    matrix[0] = 1.0;
+    matrix[1] = 0.0;
+    matrix[2] = 0.0;
+
+    matrix[3] = 0.0;
+    matrix[4] = 1.0;
+    matrix[5] = 0.0;
+
+    matrix[6] = 0.0;
+    matrix[7] = 0.0;
     if (zd > 0) {
-      matrix[0] = 1.0;
-      matrix[1] = 0.0;
-      matrix[2] = 0.0;
-
-      matrix[3] = 0.0;
-      matrix[4] = 1.0;
-      matrix[5] = 0.0;
-
-      matrix[6] = 0.0;
-      matrix[7] = 0.0;
       matrix[8] = 1.0;
     } else {
-      matrix[0] = 1.0;
-      matrix[1] = 0.0;
-      matrix[2] = 0.0;
-
-      matrix[3] = 0.0;
-      matrix[4] = 1.0;
-      matrix[5] = 0.0;
-
-      matrix[6] = 0.0;
-      matrix[7] = 0.0;
       matrix[8] = -1.0;
     }
   }
@@ -363,29 +316,27 @@ int HollowCone::calculate_dist(const double *ppos, double *dist, double *vec) co
   // Next we determine the 3D vector between the center
   // of the hollow cylinder and the point of interest
 
-  xp = point_3D[0] - hollow_cone_3D_position[0];
-  yp = point_3D[1] - hollow_cone_3D_position[1];
-  zp = point_3D[2] - hollow_cone_3D_position[2];
+  Utils::Vector3d p(point_3D - m_position);
 
   // Now we use the inverse matrix to find the
   // position of the point with respect to the origin
   // of the z-axis oriented hollow cone located
   // in the origin
 
-  xpp = matrix[0] * xp + matrix[3] * yp + matrix[6] * zp;
-  ypp = matrix[1] * xp + matrix[4] * yp + matrix[7] * zp;
+  Utils::Vector2d pp;
+  pp[0] = matrix[0] * p[0] + matrix[3] * p[1] + matrix[6] * p[2];
+  pp[1] = matrix[1] * p[0] + matrix[4] * p[1] + matrix[7] * p[2];
 
   // Now use this direction to orient the normal
 
-  if (xpp * xpp + ypp * ypp > 1.0e-10) {
+  if (pp.norm2() > 1.0e-10) {
     // The point is off the rotational symmetry
     // axis of the hollow cone
 
-    sin_xy = ypp / sqrt(xpp * xpp + ypp * ypp);
-    cos_xy = xpp / sqrt(xpp * xpp + ypp * ypp);
+    pp.normalize();
 
-    normal_x_3D = cos_xy * normal_x;
-    normal_y_3D = sin_xy * normal_x;
+    normal_x_3D = pp[0] * normal_x;
+    normal_y_3D = pp[1] * normal_x;
     normal_z_3D = normal_y;
   } else {
     // The point is on the rotational symmetry
@@ -401,39 +352,21 @@ int HollowCone::calculate_dist(const double *ppos, double *dist, double *vec) co
   // Now we need to transform the normal back to
   // the real coordinate system
 
-  normal_3D_x = matrix[0] * normal_x_3D + matrix[1] * normal_y_3D +
-                matrix[2] * normal_z_3D;
-  normal_3D_y = matrix[3] * normal_x_3D + matrix[4] * normal_y_3D +
-                matrix[5] * normal_z_3D;
-  normal_3D_z = matrix[6] * normal_x_3D + matrix[7] * normal_y_3D +
-                matrix[8] * normal_z_3D;
+  Utils::Vector3d normal_3D;
+
+  normal_3D[0] = matrix[0] * normal_x_3D + matrix[1] * normal_y_3D +
+                 matrix[2] * normal_z_3D;
+  normal_3D[1] = matrix[3] * normal_x_3D + matrix[4] * normal_y_3D +
+                 matrix[5] * normal_z_3D;
+  normal_3D[2] = matrix[6] * normal_x_3D + matrix[7] * normal_y_3D +
+                 matrix[8] * normal_z_3D;
 
   // Pass the values we obtained to ESPResSo
 
-  if (direction == -1) {
-    // Apply force towards inside hollow cone
+  vec = normal_3D * distance;
 
-    *dist = -distance;
-
-    vec[0] = -normal_3D_x;
-    vec[1] = -normal_3D_y;
-    vec[2] = -normal_3D_z;
-  } else {
-    // Apply force towards inside hollow cone
-
-    *dist = distance;
-
-    vec[0] = normal_3D_x;
-    vec[1] = normal_3D_y;
-    vec[2] = normal_3D_z;
-  }
+  dist = distance * std::copysign(1.0, m_direction);
 
   // And we are done with the hollow cone
-
-  vec[0] *= *dist;
-  vec[1] *= *dist;
-  vec[2] *= *dist;
-
-  return 0;
 }
-}
+} // namespace Shapes

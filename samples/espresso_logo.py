@@ -1,13 +1,35 @@
-from __future__ import print_function
-import espressomd
-from espressomd.shapes import *
-from espressomd.visualization_opengl import openGLLive
+# Copyright (C) 2010-2019 The ESPResSo project
+#
+# This file is part of ESPResSo.
+#
+# ESPResSo is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ESPResSo is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""
+Build the ESPResSo logo with particles.
+"""
+import math
 import numpy as np
-from math import *
 
-system = espressomd.System()
+import espressomd
+espressomd.assert_features(["WCA", "MASS"])
+import espressomd.shapes
+from espressomd.visualization_opengl import openGLLive
+
 box_l = 50
-system.box_l = [box_l, 15, box_l]
+system = espressomd.System(box_l=[box_l, 15, box_l])
+system.set_random_state_PRNG()
+#system.seed = system.cell_system.get_state()['n_nodes'] * [1234]
+np.random.seed(seed=system.seed)
 
 yoff = 3
 
@@ -22,35 +44,35 @@ for i in range(cup_height):
     alpha = 2.0 * np.pi / int(circ)
     posy = yoff + i
     for j in range(int(circ)):
-        posx = box_l / 2.0 + rad * sin(j * alpha + (np.pi / 2.0))
-        posz = box_l / 2.0 + rad * cos(j * alpha + (np.pi / 2.0))
+        posx = box_l / 2.0 + rad * math.sin(j * alpha + (np.pi / 2.0))
+        posz = box_l / 2.0 + rad * math.cos(j * alpha + (np.pi / 2.0))
         system.part.add(pos=[posx, posy, posz], type=0)
 
 # cup bottom
 rad = cup_bot_circ / (2.0 * np.pi)
 posy = yoff
-while (rad > 1.0):
+while rad > 1.0:
     rad -= 0.9
     circ = 2.0 * np.pi * rad
     alpha = 2.0 * np.pi / int(circ)
     for j in range(int(circ)):
-        posx = box_l / 2.0 + rad * sin(j * alpha + (np.pi / 2.0))
-        posz = box_l / 2.0 + rad * cos(j * alpha + (np.pi / 2.0))
+        posx = box_l / 2.0 + rad * math.sin(j * alpha + (np.pi / 2.0))
+        posz = box_l / 2.0 + rad * math.cos(j * alpha + (np.pi / 2.0))
         system.part.add(pos=[posx, posy, posz], type=0)
 
 
 # cup handle
-hand_rad = (cup_height - 4.0) / sqrt(2.0)
+hand_rad = (cup_height - 4.0) / math.sqrt(2.0)
 hand_circ = (1.5 * np.pi * hand_rad)
 hand_xoff = (cup_bot_circ + cup_top_circ) / (4.0 * np.pi) + 1.2
 hand_yoff = yoff + cup_height / 2.0 - 0.2
 alpha = 2.0 * np.pi / int(4.0 * hand_circ / 3.0)
-beta = sin((cup_top_circ - cup_bot_circ) / (2.0 * np.pi * cup_height - 1))
+beta = math.sin((cup_top_circ - cup_bot_circ) / (2.0 * np.pi * cup_height - 1))
 beta = beta - np.pi / 8.0
 posz = (box_l / 2.0) + 0.5
 for i in range(int(hand_circ)):
-    posx = hand_xoff + box_l / 2.0 + hand_rad * sin(i * alpha + beta)
-    posy = hand_yoff + hand_rad * cos(i * alpha + beta)
+    posx = hand_xoff + box_l / 2.0 + hand_rad * math.sin(i * alpha + beta)
+    posy = hand_yoff + hand_rad * math.cos(i * alpha + beta)
     system.part.add(pos=[posx, posy, posz], type=0)
 
 # saucer
@@ -68,8 +90,8 @@ for i in range(n_saucer):
     alpha = 2.0 * np.pi / int(saucer_circ - (i * 2.0 * np.pi))
     posy = yoff + 0.3 - 0.5 * i
     for j in range(int(saucer_circ - (i * 2.0 * np.pi))):
-        posx = box_l / 2.0 + rad * sin(j * alpha)
-        posz = box_l / 2.0 + rad * cos(j * alpha)
+        posx = box_l / 2.0 + rad * math.sin(j * alpha)
+        posz = box_l / 2.0 + rad * math.cos(j * alpha)
         system.part.add(pos=[posx, posy, posz], type=1)
 
 # python
@@ -79,8 +101,7 @@ posz = box_l / 2.0
 diam = 0.8
 mass = 0.01
 fl = -1
-harm = espressomd.interactions.HarmonicBond(
-    k=400.0, r_0=diam, r_cut=5.0)
+harm = espressomd.interactions.HarmonicBond(k=400.0, r_0=diam, r_cut=5.0)
 system.bonded_inter.add(harm)
 
 for i in range(n_pbody):
@@ -108,8 +129,8 @@ rad = (cup_top_circ - 12.5) / (2.0 * np.pi)
 alpha = 2.0 * np.pi / int(n_steam)
 for i in range(n_steam):
     for j in range(l_steam):
-        posx = box_l / 2.0 + rad * sin(i * alpha + j * 0.6)
-        posz = box_l / 2.0 + rad * cos(i * alpha + j * 0.6)
+        posx = box_l / 2.0 + rad * math.sin(i * alpha + j * 0.6)
+        posz = box_l / 2.0 + rad * math.cos(i * alpha + j * 0.6)
         posy = yoff + 2 + j * 0.1 * rad
         system.part.add(pos=[posx, posy, posz], type=3)
         pid = len(system.part) - 1
@@ -125,64 +146,63 @@ for i in range(n_steam):
 
 # stand
 system.constraints.add(
-    shape=Cylinder(
+    shape=espressomd.shapes.Cylinder(
         center=[box_l / 2.0, 1.0, box_l / 2.0],
-            axis=[0, 1, 0],
-            direction=1,
-            radius=7.5,
-            length=1), particle_type=0, penetrable=1)
+        axis=[0, 1, 0],
+        direction=1,
+        radius=7.5,
+        length=1),
+    particle_type=0,
+    penetrable=True)
 
 
 system.time_step = 0.00022
 system.cell_system.skin = 0.4
 
-system.thermostat.set_langevin(kT=0.0, gamma=0.02)
-WCA_cut = 2.**(1. / 6.)
+system.thermostat.set_langevin(kT=0.0, gamma=0.02, seed=42)
 
-lj_eps = 1.0
-lj_sig = 0.7
-lj_cut = WCA_cut * lj_sig
+wca_eps = 1.0
+wca_sig = 0.7
 for i in range(2):
     for j in range(i, 2):
-        system.non_bonded_inter[i, j].lennard_jones.set_params(
-            epsilon=lj_eps, sigma=lj_sig, cutoff=lj_cut, shift="auto")
+        system.non_bonded_inter[i, j].wca.set_params(
+            epsilon=wca_eps, sigma=wca_sig)
 
-lj_eps = 1.0
-lj_sig = 1.0
-lj_cut = WCA_cut * lj_sig
+wca_eps = 1.0
+wca_sig = 1.0
 for i in range(3):
-    system.non_bonded_inter[i, 2].lennard_jones.set_params(
-        epsilon=lj_eps, sigma=lj_sig, cutoff=lj_cut, shift="auto")
+    system.non_bonded_inter[i, 2].wca.set_params(
+        epsilon=wca_eps, sigma=wca_sig)
 
-visualizer = openGLLive(system,
-                        background_color=[
-                        0.2, 0.2, 0.3],
-                        camera_position=[box_l / 2.0, box_l / 4.0, 20 * 3],
-                        particle_sizes=[0.6, 0.75, 0.9, 0.2],
-                        particle_type_materials=[
-                        'silver', 'gold', 'greenplastic', 'chrome'],
-                        particle_type_colors=[[0.2, 0.2, 0.8, 1], [
-                            0.8, 0.2, 0.2, 1], [
-                                1, 1, 1, 1], [0.8, 0.8, 0.8, 1]],
-                        bond_type_materials=[
-                        'chrome'],
-                        bond_type_colors=[[0.2, 0.2, 0.2, 0.5]],
-                        bond_type_radius=[0.1],
-                        constraint_type_colors=[[1, 1, 1, 0.5]],
-                        constraint_type_materials=['ruby'],
-                        spotlight_brightness=5.0,
-                        spotlight_focus=100,
-                        spotlight_angle=60,
-                        light_brightness=1.0,
-                        ext_force_arrows=False,
-                        draw_axis=False,
-                        draw_box=False,
-                        drag_enabled=True)
+visualizer = openGLLive(
+    system,
+    background_color=[0.2, 0.2, 0.3],
+    camera_position=[box_l / 2.0, box_l / 4.0, 20 * 3],
+    particle_sizes=[0.6, 0.75, 0.9, 0.2],
+    particle_type_materials=['bright', 'bright', 'plastic', 'chrome'],
+    particle_type_colors=[[0.2, 0.2, 0.8, 1],
+                          [0.8, 0.2, 0.2, 1],
+                          [1, 1, 1, 1],
+                          [0.8, 0.8, 0.8, 1]],
+    bond_type_materials=['chrome'],
+    bond_type_colors=[[0.2, 0.2, 0.2, 0.5]],
+    bond_type_radius=[0.1],
+    constraint_type_colors=[[1, 1, 1, 0.5]],
+    constraint_type_materials=['chrome'],
+    spotlight_brightness=5.0,
+    spotlight_focus=100,
+    spotlight_angle=60,
+    light_brightness=1.0,
+    ext_force_arrows=False,
+    draw_axis=False,
+    draw_box=False,
+    drag_enabled=True)
 
 
 def rotate():
     visualizer.camera.rotateSystemXL()
 
 # visualizer.registerCallback(rotate, interval = 16)
+
 
 visualizer.run(1)

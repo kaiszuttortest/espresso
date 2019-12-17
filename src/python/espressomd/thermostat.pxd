@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2013,2014,2015,2016 The ESPResSo project
+# Copyright (C) 2013-2019 The ESPResSo project
 #
 # This file is part of ESPResSo.
 #
@@ -16,22 +16,20 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-from __future__ import print_function, absolute_import
-include "myconfig.pxi"
+from libcpp cimport bool as cbool
+from libc cimport stdint
 
-cdef extern from "Vector.hpp":
-    cppclass Vector3d:
-        double & operator[](int i)
+include "myconfig.pxi"
+from .utils cimport Vector3d
 
 cdef extern from "thermostat.hpp":
     double temperature
     int thermo_switch
+    cbool thermo_virtual
     int THERMO_OFF
     int THERMO_LANGEVIN
     int THERMO_LB
     int THERMO_NPT_ISO
-    int THERMO_DPD
-    int THERMO_INTER_DPD
     int THERMO_DPD
 
     IF PARTICLE_ANISOTROPY:
@@ -40,3 +38,14 @@ cdef extern from "thermostat.hpp":
     ELSE:
         double langevin_gamma_rotation
         double langevin_gamma
+
+    void langevin_set_rng_state(stdint.uint64_t counter)
+    cbool langevin_is_seed_required()
+
+    stdint.uint64_t langevin_get_rng_state()
+
+cdef extern from "dpd.hpp":
+    IF DPD:
+        void dpd_set_rng_state(stdint.uint64_t counter)
+        cbool dpd_is_seed_required()
+        stdint.uint64_t dpd_get_rng_state()

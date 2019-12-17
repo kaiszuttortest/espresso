@@ -1,41 +1,44 @@
 /*
-Copyright (C) 2010,2012,2013,2014,2015,2016 The ESPResSo project
-Copyright (C) 2002,2003,2004,2005,2006,2007,2008,2009,2010
-    Max-Planck-Institute for Polymer Research, Theory Group
-
-This file is part of ESPResSo.
-
-ESPResSo is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-ESPResSo is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * Copyright (C) 2010-2019 The ESPResSo project
+ * Copyright (C) 2002,2003,2004,2005,2006,2007,2008,2009,2010
+ *   Max-Planck-Institute for Polymer Research, Theory Group
+ *
+ * This file is part of ESPResSo.
+ *
+ * ESPResSo is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ESPResSo is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include "metadynamics.hpp"
 #include "cells.hpp"
+#include "communication.hpp"
 #include "errorhandling.hpp"
 #include "grid.hpp"
 
-/** \file metadynamics.hpp
-*
-*  This file contains routines to perform metadynamics.  Right now, the
-*  reaction coordinate is defined between two particles (either distance
-*  or z-projected distance). Note that these
-*  particles can be virtual sites, in order to handle molecules.
-*
-*  - set metadynamics options
-*  - initialize bias forces and free energy profiles
-*  - calculate reaction coordinate for each integration step
-*  - apply bias force on particles
-*/
+#include <cmath>
+
+/** \file
+ *
+ *  This file contains routines to perform metadynamics. Right now, the
+ *  reaction coordinate is defined between two particles (either distance
+ *  or z-projected distance). Note that these
+ *  particles can be virtual sites, in order to handle molecules.
+ *
+ *  - set metadynamics options
+ *  - initialize bias forces and free energy profiles
+ *  - calculate reaction coordinate for each integration step
+ *  - apply bias force on particles
+ */
 
 #ifdef METADYNAMICS
 /* metadynamics switch */
@@ -67,30 +70,25 @@ double *meta_acc_force = nullptr;
 /** Accumulated free energy profile */
 double *meta_acc_fprofile = nullptr;
 
-double *meta_cur_xi = nullptr;
+Utils::Vector3d meta_cur_xi;
 double meta_val_xi = 0.;
-double *meta_apply_direction = nullptr;
+Utils::Vector3d meta_apply_direction;
 
 void meta_init() {
   if (meta_switch == META_OFF)
     return;
 
-  /* Initialize arrays if they're empty. These get freed upon calling the Tcl
-   * parser */
+  /* Initialize arrays if they're empty. */
   if (meta_acc_force == nullptr || meta_acc_fprofile == nullptr) {
     meta_acc_force = (double *)calloc(meta_xi_num_bins * sizeof *meta_acc_force,
                                       sizeof *meta_acc_force);
     meta_acc_fprofile =
         (double *)calloc(meta_xi_num_bins * sizeof *meta_acc_fprofile,
                          sizeof *meta_acc_fprofile);
-    meta_cur_xi =
-        (double *)calloc(3 * sizeof *meta_cur_xi, sizeof *meta_cur_xi);
-    meta_apply_direction = (double *)calloc(3 * sizeof *meta_apply_direction,
-                                            sizeof *meta_apply_direction);
   }
 
-  /* Check that the simulation uses onle a single processor. Otherwise exit.
-  *  MPI interface *not* implemented. */
+  /* Check that the simulation uses only a single processor. Otherwise exit.
+   *  MPI interface *not* implemented. */
   if (n_nodes != 1) {
     runtimeErrorMsg() << "Can't use metadynamics on more than one processor.\n";
     return;
@@ -100,61 +98,58 @@ void meta_init() {
 }
 
 /** Metadynamics main function:
-* - Calculate reaction coordinate
-* - Update profile and biased force
-* - apply external force
-*/
-void meta_perform() {
+ * - Calculate reaction coordinate
+ * - Update profile and biased force @cite marsili10a
+ * - apply external force
+ */
+void meta_perform(const ParticleRange &particles) {
+  Utils::Vector3d ppos1, ppos2;
+
   if (meta_switch == META_OFF)
     return;
 
-  double ppos1[3] = {0, 0, 0}, ppos2[3] = {0, 0, 0}, factor;
-  int img1[3], img2[3], flag1 = 0, flag2 = 0;
+  int img1[3], img2[3];
+  bool flag1 = false, flag2 = false;
   Particle *p1 = nullptr, *p2 = nullptr;
 
-  for (auto &p : local_cells.particles()) {
+  for (auto &p : particles) {
     if (p.p.identity == meta_pid1) {
-      flag1 = 1;
+      flag1 = true;
       p1 = &p;
-      memmove(ppos1, p.r.p, 3 * sizeof(double));
-      memmove(img1, p.l.i, 3 * sizeof(int));
-      unfold_position(ppos1, img1);
+      ppos1 = unfolded_position(p.r.p, p.l.i, box_geo.length());
 
-      if (flag1 && flag2) {
+      if (flag1 & flag2) {
         /* vector r2-r1 - Not a minimal image! Unfolded position */
-        vector_subt(meta_cur_xi, ppos2, ppos1);
+        meta_cur_xi = ppos2 - ppos1;
         break;
       }
     }
     if (p.p.identity == meta_pid2) {
-      flag2 = 1;
+      flag2 = true;
       p2 = &p;
-      memmove(ppos2, p.r.p, 3 * sizeof(double));
-      memmove(img2, p.l.i, 3 * sizeof(int));
-      unfold_position(ppos2, img2);
+      ppos2 = unfolded_position(p.r.p, p.l.i, box_geo.length());
 
-      if (flag1 && flag2) {
+      if (flag1 & flag2) {
         /* vector r2-r1 - Not a minimal image! Unfolded position */
-        vector_subt(meta_cur_xi, ppos2, ppos1);
+        meta_cur_xi = ppos2 - ppos1;
         break;
       }
     }
   }
 
-  if (flag1 == 0 || flag2 == 0) {
+  if (!flag1 | !flag2) {
     runtimeErrorMsg() << "Metadynamics: can't find pid1 or pid2.\n";
     return;
   }
 
   /* Now update free energy profile
-  * Here, we're following the functional form of
-  * Marsili etal., J Comp. Chem, 31 (2009).
-  * Instead of gaussians, we use so-called Lucy's functions */
+   * Here, we're following the functional form of @cite marsili10a.
+   * Instead of Gaussians, we use so-called Lucy's functions */
 
   for (int i = 0; i < meta_xi_num_bins; ++i) {
     if (meta_switch == META_DIST) {
       // reaction coordinate value
-      meta_val_xi = sqrt(sqrlen(meta_cur_xi));
+      meta_val_xi = meta_cur_xi.norm();
       // Update free energy profile and biased force
       if (int(sim_time / time_step) % meta_num_relaxation_steps == 0) {
         meta_acc_fprofile[i] -=
@@ -164,7 +159,7 @@ void meta_perform() {
       }
 
       // direction of the bias force
-      unit_vector(meta_cur_xi, meta_apply_direction);
+      meta_apply_direction = meta_cur_xi / meta_cur_xi.norm();
     } else if (meta_switch == META_REL_Z) {
       // reaction coordinate value: relative height of z_pid1 with respect to
       // z_pid2
@@ -189,6 +184,7 @@ void meta_perform() {
   /** Apply force */
 
   // Calculate the strength of the applied force
+  double factor = 0;
   if (meta_val_xi < meta_xi_min) {
     // below the lower bound
     factor = -1. * meta_f_bound * (meta_xi_min - meta_val_xi) / meta_xi_step;
@@ -197,7 +193,7 @@ void meta_perform() {
     factor = meta_f_bound * (meta_val_xi - meta_xi_max) / meta_xi_step;
   } else {
     // within the RC interval
-    int i = (int)dround((meta_val_xi - meta_xi_min) / meta_xi_step);
+    auto i = (int)std::round((meta_val_xi - meta_xi_min) / meta_xi_step);
     if (i < 0)
       i = 0;
     if (i >= meta_xi_num_bins)
@@ -218,8 +214,8 @@ double calculate_lucy(double xi, double xi_0) {
   if (dist <= meta_bias_width) {
     return meta_bias_height * (1 + 2 * dist / meta_bias_width) *
            pow(1 - dist / meta_bias_width, 2);
-  } else
-    return 0.;
+  }
+  return 0.;
 }
 
 /** Calculate derivative of Lucy function */
@@ -233,8 +229,8 @@ double calculate_deriv_lucy(double xi, double xi_0) {
     if (xi < xi_0)
       result *= -1.;
     return result;
-  } else
-    return 0.;
+  }
+  return 0.;
 }
 
 #endif

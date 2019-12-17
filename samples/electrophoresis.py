@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2013,2014 The ESPResSo project
+# Copyright (C) 2013-2019 The ESPResSo project
 #
 # This file is part of ESPResSo.
 #
@@ -16,58 +16,47 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-from __future__ import print_function
+"""
+Simulate electrophoresis of a linear polymer using the P3M solver.
+"""
 import espressomd
-from espressomd import thermostat
+
+required_features = ["P3M", "EXTERNAL_FORCES", "WCA"]
+espressomd.assert_features(required_features)
+
 from espressomd import interactions
 from espressomd import electrostatics
-import sys
 import numpy as np
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
-import os
-
-print(espressomd.features())
-
-# Seed
-#############################################################
-np.random.seed(42)
 
 # System parameters
 #############################################################
 
-system = espressomd.System()
+system = espressomd.System(box_l=3 * [100.0])
+
+# Seed
+#############################################################
+system.set_random_state_PRNG()
+#system.seed = system.cell_system.get_state()['n_nodes'] * [1234]
+np.random.seed(seed=system.seed)
+
 system.time_step = 0.01
 system.cell_system.skin = 0.4
-system.box_l = [100, 100, 100]
-system.periodicity = [1, 1, 1]
-system.thermostat.set_langevin(kT=1.0, gamma=1.0)
+system.periodicity = [True, True, True]
 # system.cell_system.set_n_square(use_verlet_lists=False)
-system.cell_system.max_num_cells = 2744
 
 # Non-bonded interactions
 ###############################################################
 # WCA between monomers
-system.non_bonded_inter[0, 0].lennard_jones.set_params(
-    epsilon=1, sigma=1,
-    cutoff=2**(1. / 6), shift="auto")
+system.non_bonded_inter[0, 0].wca.set_params(epsilon=1, sigma=1)
 
 # WCA counterions - polymer
-system.non_bonded_inter[0, 1].lennard_jones.set_params(
-    epsilon=1, sigma=1,
-    cutoff=2**(1. / 6), shift="auto")
+system.non_bonded_inter[0, 1].wca.set_params(epsilon=1, sigma=1)
 
-# WCA coions - polymer
-system.non_bonded_inter[0, 2].lennard_jones.set_params(
-    epsilon=1, sigma=1,
-    cutoff=2**(1. / 6), shift="auto")
+# WCA ions - polymer
+system.non_bonded_inter[0, 2].wca.set_params(epsilon=1, sigma=1)
 
 # WCA between ions
-system.non_bonded_inter[1, 2].lennard_jones.set_params(
-    epsilon=1, sigma=1,
-    cutoff=2**(1. / 6), shift="auto")
+system.non_bonded_inter[1, 2].wca.set_params(epsilon=1, sigma=1)
 
 
 # Bonded interactions
@@ -81,42 +70,45 @@ system.bonded_inter.add(harmonicangle)
 
 
 # Create Monomer beads and bonds
-#########################################################################################
+##########################################################################
 n_monomers = 20
 
-init_polymer_pos = np.dstack((np.arange(n_monomers), np.zeros(n_monomers), np.zeros(n_monomers)))[
-    0] + np.array([system.box_l[0] / 2 - n_monomers / 2, system.box_l[1] / 2, system.box_l[2] / 2])
+init_polymer_pos = np.dstack(
+    (np.arange(n_monomers), np.zeros(n_monomers), np.zeros(n_monomers)))[0] + \
+    np.array([system.box_l[0] / 2 - n_monomers / 2,
+              system.box_l[1] / 2,
+              system.box_l[2] / 2])
 
 system.part.add(pos=init_polymer_pos)
 
 
-system.part[:-1].add_bond((harmonic, np.arange(n_monomers)[1:]))
-system.part[1:-1].add_bond((harmonicangle, np.arange(n_monomers)
-                            [:-2], np.arange(n_monomers)[2:]))
+# system.part[:-1].add_bond((harmonic, np.arange(n_monomers)[1:]))
+# system.part[1:-1].add_bond((harmonicangle, np.arange(n_monomers)[:-2],
+# np.arange(n_monomers)[2:]))
 
 # Particle creation with loops:
-# for i in range(n_monomers):
-#     if i > 0:
-#         system.part[i].add_bond((harmonic, i - 1))
+for i in range(n_monomers):
+    if i > 0:
+        system.part[i].add_bond((harmonic, i - 1))
 
-# for i in range(1,n_monomers-1):
-#     system.part[i].add_bond((harmonicangle,i - 1, i + 1))
+for i in range(1, n_monomers - 1):
+    system.part[i].add_bond((harmonicangle, i - 1, i + 1))
 
 system.part[:n_monomers].q = -np.ones(n_monomers)
 
 # Create counterions
 ###################################################################
 system.part.add(pos=np.random.random((n_monomers, 3)) * system.box_l,
-                q=1,
-                type=1)
+                q=np.ones(n_monomers, dtype=int),
+                type=np.ones(n_monomers, dtype=int))
 
 # Create ions
 ###############################################################
 n_ions = 100
 
 system.part.add(pos=np.random.random((n_ions, 3)) * system.box_l,
-                q=np.hstack((np.ones(n_ions / 2), -np.ones(n_ions / 2))),
-                type=np.array(np.hstack((np.ones(n_ions / 2), 2 * np.ones(n_ions / 2))), dtype=int))
+                q=np.hstack((np.ones(n_ions // 2), -np.ones(n_ions // 2))),
+                type=np.array(np.hstack((np.ones(n_ions // 2), 2 * np.ones(n_ions // 2))), dtype=int))
 
 
 # Sign charges to particles after the particle creation:
@@ -132,37 +124,37 @@ print("Q_tot:", np.sum(system.part[:].q))
 #      Warmup                                               #
 #############################################################
 
-system.force_cap = 10
+# warmup integration (steepest descent)
+warm_steps = 20
+warm_n_times = 20
+min_dist = 0.9
 
-for i in range(1000):
-    sys.stdout.write("\rWarmup: %03i" % i)
-    sys.stdout.flush()
-    system.integrator.run(steps=1)
-    system.force_cap = 10*i
+# minimize energy using min_dist as the convergence criterion
+system.integrator.set_steepest_descent(f_max=0, gamma=1e-3,
+                                       max_displacement=0.01)
+i = 0
+while system.analysis.min_dist() < min_dist and i < warm_n_times:
+    print("minimization: {:+.2e}".format(system.analysis.energy()["total"]))
+    system.integrator.run(warm_steps)
+    i += 1
 
-system.force_cap = 0
+print("minimization: {:+.2e}".format(system.analysis.energy()["total"]))
+print()
+system.integrator.set_vv()
 
-print("\nWarmup finished!\n")
+# activate thermostat
+system.thermostat.set_langevin(kT=1.0, gamma=1.0, seed=42)
 
 #############################################################
 #      Sampling                                             #
 #############################################################
 #
-# Activate electostatic with checkpoint example
+# Activate electrostatics
 #############################################################
-read_checkpoint = False
-# Load checkpointed p3m class
-if os.path.isfile("p3m_checkpoint") and read_checkpoint == True:
-    print("reading p3m from file")
-    p3m = pickle.load(open("p3m_checkpoint", "r"))
-else:
-    p3m = electrostatics.P3M(prefactor=1.0, accuracy=1e-2)
-    print("Tuning P3M")
+p3m = electrostatics.P3M(prefactor=1.0, accuracy=1e-2)
+print("Tuning P3M")
 
 system.actors.add(p3m)
-
-# Checkpoint AFTER tuning (adding method to actors)
-pickle.dump(p3m, open("p3m_checkpoint", "w"), -1)
 
 print("P3M parameter:\n")
 p3m_params = p3m.get_params()
@@ -171,7 +163,7 @@ for key in list(p3m_params.keys()):
 
 print(system.actors)
 
-# Apply external Force
+# Apply external force
 #############################################################
 n_part = len(system.part)
 system.part[:].ext_force = np.dstack(
@@ -179,25 +171,17 @@ system.part[:].ext_force = np.dstack(
 
 # print(system.part[:].ext_force)
 
-
-# Activate LB
-############################################################
-# lbf = lb.LBF(dens=1, tau=0.01, visc=1, fric=1, agrid=1)
-# system.actors.add(lbf)
-
 # Data arrays
 v_list = []
 pos_list = []
 
 # Sampling Loop
 for i in range(4000):
-    sys.stdout.write("\rSampling: %04i" % i)
-    sys.stdout.flush()
+    if i % 100 == 0:
+        print("\rSampling: %04i" % i, end='', flush=True)
     system.integrator.run(steps=1)
-
     v_list.append(system.part[:n_monomers].v)
     pos_list.append(system.part[:n_monomers].pos)
-    # other observales:
 
 print("\nSampling finished!\n")
 
@@ -222,7 +206,7 @@ print("MOBILITY", mu)
 ##################################
 # this calculation method requires
 # numpy 1.10 or higher
-if float(np.version.version.split(".")[1]) >= 10:
+if tuple(map(int, np.__version__.split("."))) >= (1, 10):
     from scipy.optimize import curve_fit
     from numpy.linalg import norm
 
@@ -262,7 +246,7 @@ ax = fig1.add_subplot(111)
 for i in range(3):
     ax.plot(COM[:-500, i], label="COM pos %s" % direction[i])
 ax.legend(loc="best")
-ax.set_xlabel("time_step")
+ax.set_xlabel("time step")
 ax.set_ylabel("r")
 
 fig2 = pp.figure()
@@ -270,17 +254,17 @@ ax = fig2.add_subplot(111)
 for i in range(3):
     ax.plot(COM_v[:-500, i], label="COM v %s" % direction[i])
 ax.legend(loc="best")
-ax.set_xlabel("time_step")
+ax.set_xlabel("time step")
 ax.set_ylabel("v")
 
-if float(np.version.version.split(".")[1]) >= 10:
+if tuple(map(int, np.__version__.split("."))) >= (1, 10):
     fig3 = pp.figure()
     ax = fig3.add_subplot(111)
     ax.plot(c_length, cos_theta, label="sim data")
     ax.plot(c_length, decay(c_length, fit[0]), label="fit")
     ax.legend(loc="best")
     ax.set_xlabel("contour length")
-    ax.set_ylabel("<cos(theta)>")
+    ax.set_ylabel(r"$\langle \cos(\theta) \rangle$")
 
 pp.show()
 

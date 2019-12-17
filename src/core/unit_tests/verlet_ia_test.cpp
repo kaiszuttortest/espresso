@@ -1,3 +1,21 @@
+/*
+ * Copyright (C) 2010-2019 The ESPResSo project
+ *
+ * This file is part of ESPResSo.
+ *
+ * ESPResSo is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ESPResSo is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 #include <algorithm>
 #include <functional>
 #include <iostream>
@@ -7,8 +25,8 @@
 #define BOOST_TEST_DYN_LINK
 #include <boost/test/unit_test.hpp>
 
-#include "core/Cell.hpp"
-#include "core/algorithm/verlet_ia.hpp"
+#include "Cell.hpp"
+#include "algorithm/verlet_ia.hpp"
 
 void check_pairs(int n_part, std::vector<std::pair<int, int>> const &pairs) {
   BOOST_CHECK(pairs.size() == (n_part * (n_part - 1) / 2));
@@ -28,7 +46,8 @@ struct Distance {
 
 /* Dummy interaction criterion */
 struct VerletCriterion {
-  bool operator()(Particle const &p1, Particle const &p2, Distance const& d) const {
+  bool operator()(Particle const &p1, Particle const &p2,
+                  Distance const &d) const {
     return d.interact;
   }
 };
@@ -42,13 +61,17 @@ BOOST_AUTO_TEST_CASE(verlet_ia) {
 
   auto id = 0;
   for (auto &c : cells) {
+    std::vector<Cell *> neighbors;
+
     for (auto &n : cells) {
       if (&c != &n)
-        c.m_neighbors.push_back(std::ref(n));
+        neighbors.push_back(&n);
     }
 
-    c.part = new Particle[n_part_per_cell];
-    c.n = c.max = n_part_per_cell;
+    c.m_neighbors = Neighbors<Cell *>(neighbors, {});
+
+    c.resize(n_part_per_cell);
+    std::uninitialized_fill(c.part, c.part + c.n, Particle());
 
     for (unsigned i = 0; i < n_part_per_cell; ++i) {
       c.part[i].p.identity = id++;
@@ -82,7 +105,7 @@ BOOST_AUTO_TEST_CASE(verlet_ia) {
   pairs.clear();
   std::fill(id_counts.begin(), id_counts.end(), 0);
 
-  /* Now check the verlet lists */
+  /* Now check the Verlet lists */
   Algorithm::verlet_ia(
       cells.begin(), cells.end(),
       [&id_counts](Particle const &p) { id_counts[p.p.identity]++; },
@@ -123,8 +146,4 @@ BOOST_AUTO_TEST_CASE(verlet_ia) {
                           [](int count) { return count == 1; }));
 
   check_pairs(n_part, pairs);
-
-  for (auto &c : cells) {
-    delete[] c.part;
-  }
 }

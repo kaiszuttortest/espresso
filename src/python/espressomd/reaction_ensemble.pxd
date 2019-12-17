@@ -1,35 +1,52 @@
+# Copyright (C) 2010-2019 The ESPResSo project
+#
+# This file is part of ESPResSo.
+#
+# ESPResSo is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ESPResSo is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 include "myconfig.pxi"
 
 from libcpp cimport bool
 from libcpp.vector cimport vector
+from libcpp.pair cimport pair
 from libcpp.string cimport string
 from libcpp.map cimport map
 
 cdef extern from "reaction_ensemble.hpp" namespace "ReactionEnsemble":
-
 
     ctypedef struct SingleReaction:
         vector[int] reactant_types
         vector[int] reactant_coefficients
         vector[int] product_types
         vector[int] product_coefficients
-        double equilibrium_constant
+        double gamma
         int nu_bar
+        double get_acceptance_rate()
 
     cdef cppclass CReactionAlgorithm "ReactionEnsemble::ReactionAlgorithm":
+        int CReactionAlgorithm(int seed)
         int do_reaction(int reaction_steps) except +
-        bool do_global_mc_move_for_particles_of_type(int type, int start_id_polymer, int end_id_polymer, int particle_number_of_type, bool use_wang_landau)
+        bool do_global_mc_move_for_particles_of_type(int type, int particle_number_of_type, bool use_wang_landau)
         void set_cuboid_reaction_ensemble_volume()
         int check_reaction_ensemble() except +
-        int m_accepted_configurational_MC_moves
-        int m_tried_configurational_MC_moves
-        int delete_particle (int p_id)
-        void add_reaction(double equilibrium_constant, vector[int] _reactant_types, vector[int] _reactant_coefficients, vector[int] _product_types, vector[int] _product_coefficients) except +
-        
+        double get_acceptance_rate_configurational_moves()
+        int delete_particle(int p_id)
+        void add_reaction(double gamma, vector[int] _reactant_types, vector[int] _reactant_coefficients, vector[int] _product_types, vector[int] _product_coefficients) except +
+        void delete_reaction(int reaction_id)
+
         vector[SingleReaction] reactions
         int nr_different_types
         map[int, double] charges_of_types
-        double standard_pressure_in_simulation_units
         double temperature
         double exclusion_radius
         double volume
@@ -43,10 +60,10 @@ cdef extern from "reaction_ensemble.hpp" namespace "ReactionEnsemble":
         int non_interacting_type
 
     cdef cppclass CReactionEnsemble "ReactionEnsemble::ReactionEnsemble"(CReactionAlgorithm):
-        CReactionEnsemble()
-        
+        CReactionEnsemble(int seed)
+
     cdef cppclass CWangLandauReactionEnsemble "ReactionEnsemble::WangLandauReactionEnsemble"(CReactionAlgorithm):
-        CWangLandauReactionEnsemble()
+        CWangLandauReactionEnsemble(int seed)
         double wang_landau_parameter
         double initial_wang_landau_parameter
         int number_of_monte_carlo_moves_between_check_of_convergence
@@ -54,9 +71,6 @@ cdef extern from "reaction_ensemble.hpp" namespace "ReactionEnsemble":
         string output_filename
         vector[double] minimum_energies_at_flat_index
         vector[double] maximum_energies_at_flat_index
-        int polymer_start_id
-        int polymer_end_id
-        bool fix_polymer
         bool do_not_sample_reaction_partition_function
         void add_new_CV_degree_of_association(int associated_type, double CV_minimum, double CV_maximum, vector[int] corresponding_acid_types)
         void add_new_CV_potential_energy(string filename, double delta_CV)
@@ -65,11 +79,11 @@ cdef extern from "reaction_ensemble.hpp" namespace "ReactionEnsemble":
         int write_wang_landau_checkpoint(string identifier)
         int load_wang_landau_checkpoint(string identifier)
         void write_wang_landau_results_to_file(string full_path_to_output_filename)
-        
+
     cdef cppclass CConstantpHEnsemble "ReactionEnsemble::ConstantpHEnsemble"(CReactionAlgorithm):
-        CConstantpHEnsemble()
+        CConstantpHEnsemble(int seed)
         double m_constant_pH
 
     cdef cppclass CWidomInsertion "ReactionEnsemble::WidomInsertion"(CReactionAlgorithm):
-        CWidomInsertion()
-        double measure_excess_chemical_potential(int reaction_id)
+        CWidomInsertion(int seed)
+        pair[double, double] measure_excess_chemical_potential(int reaction_id) except +

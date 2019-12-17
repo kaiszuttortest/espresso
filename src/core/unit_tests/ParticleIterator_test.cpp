@@ -1,9 +1,26 @@
+/*
+ * Copyright (C) 2010-2019 The ESPResSo project
+ *
+ * This file is part of ESPResSo.
+ *
+ * ESPResSo is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ESPResSo is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 #include <algorithm>
+#include <memory>
+#include <numeric>
 #include <type_traits>
 #include <vector>
-#include <numeric>
-
-#include "core/utils/make_unique.hpp"
 
 #define BOOST_TEST_MODULE ParticleIterator test
 #define BOOST_TEST_DYN_LINK
@@ -21,7 +38,7 @@ std::vector<std::unique_ptr<Cell>> make_cells(std::size_t n) {
   std::vector<std::unique_ptr<Cell>> cells(n);
 
   for (auto &c : cells) {
-    c = Utils::make_unique<Cell>();
+    c = std::make_unique<Cell>();
   }
 
   return cells;
@@ -61,7 +78,7 @@ BOOST_AUTO_TEST_CASE(completeness) {
   auto begin = iterator(cells.begin(), cells.end(), 0);
   auto end = iterator(cells.end(), cells.end(), 0);
 
-  /* Iterator over parts and count occurence */
+  /* Iterator over parts and count occurrence */
   for (; begin != end; ++begin) {
     counts[begin->identity()]++;
   }
